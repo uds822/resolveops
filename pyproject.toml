@@ -13,5 +13,6 @@ dependencies = ["PyMuPDF>=1.24"]
 where = ["src"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "--basetemp=.pytest_tmp_local -p no:cacheprovider"

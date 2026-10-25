@@ -31,6 +31,9 @@ dist/
 # Generated extraction and profiling output
 data/profiling/
 
+# Large local source PDFs
+data/raw/**/*.pdf
+
 # Local environment files
 .env
 .env.*

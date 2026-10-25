@@ -23,4 +23,31 @@ def extract_pdf_page(pdf_path, page_number):
         "block_type": "text",
         "content": text
     }
- 
+
+
+def extract_tables(page):
+    result = []
+
+    tables = page.find_tables(use_layout=False)
+
+    for table in tables.tables:
+        rows = []
+
+        for row in table.rows:
+            values = []
+
+            for cell in row.cells:
+                if cell is None:
+                    values.append("")
+                else:
+                    text = page.get_text(
+                        "text",
+                        clip=pymupdf.Rect(cell)
+                    )
+                    values.append(text.strip())
+
+            rows.append(values)
+
+        result.append(rows)
+
+    return result
