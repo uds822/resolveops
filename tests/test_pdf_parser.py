@@ -4,6 +4,7 @@ import pytest
 
 from resolveops.ingestion.models import BlockType, SourceType
 from resolveops.ingestion.pdf_parser import (
+    _find_tables,
     _text_fragments_outside_tables,
     extract_pdf_page,
     parse_pdf,
@@ -63,6 +64,26 @@ def test_parse_pdf_rejects_invalid_page(tmp_path):
 
     with pytest.raises(ValueError, match="Invalid page number"):
         parse_pdf(path, page_number=2)
+
+
+def test_find_tables_falls_back_when_use_layout_is_unsupported():
+    class LegacyPage:
+        def __init__(self):
+            self.calls = []
+
+        def find_tables(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs:
+                raise TypeError(
+                    "find_tables() got an unexpected keyword argument "
+                    "'use_layout'"
+                )
+            return "legacy tables"
+
+    page = LegacyPage()
+
+    assert _find_tables(page) == "legacy tables"
+    assert page.calls == [{"use_layout": False}, {}]
 
 
 def test_mixed_block_splits_text_around_table():

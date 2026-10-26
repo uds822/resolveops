@@ -38,10 +38,21 @@ def extract_pdf_page(pdf_path: str | Path, page_number: int) -> dict:
     }
 
 
+def _find_tables(page):
+    try:
+        return page.find_tables(use_layout=False)
+    except TypeError as error:
+        message = str(error)
+        if "unexpected keyword" not in message or "use_layout" not in message:
+            raise
+
+        return page.find_tables()
+
+
 def _extract_table_entries(page) -> list[tuple[pymupdf.Rect, list[list[str]]]]:
     result: list[tuple[pymupdf.Rect, list[list[str]]]] = []
 
-    tables = page.find_tables(use_layout=False)
+    tables = _find_tables(page)
 
     for table in tables.tables:
         rows = []
