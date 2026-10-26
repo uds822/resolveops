@@ -7,7 +7,12 @@ build-backend = "setuptools.build_meta"
 name = "resolveops"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["PyMuPDF>=1.24"]
+dependencies = [
+    "PyMuPDF>=1.24",
+    "beautifulsoup4>=4.12",
+    "markdown-it-py>=3.0",
+    "pydantic>=2.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
