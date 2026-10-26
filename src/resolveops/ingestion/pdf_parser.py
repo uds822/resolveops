@@ -75,6 +75,76 @@ def _bbox_identity(page_number: int, rect: pymupdf.Rect) -> str:
     coordinates = ":".join(f"{value:.3f}" for value in rect)
     return f"page:{page_number}:bbox:{coordinates}"
 
+# this function checks if the center of a word is within any of the table rectangles
+def _word_center_is_in_table(
+    word,
+    table_rects: list[pymupdf.Rect],
+) -> bool:
+    center_x = (word[0] + word[2]) / 2
+    center_y = (word[1] + word[3]) / 2
+
+    return any(
+        table_rect.x0 <= center_x <= table_rect.x1
+        and table_rect.y0 <= center_y <= table_rect.y1
+        for table_rect in table_rects
+    )
+
+
+def _words_to_text(words) -> str:
+    lines = {}
+
+    for word in words:
+        line_key = (word[5], word[6])
+        lines.setdefault(line_key, []).append(word)
+
+    ordered_lines = sorted(
+        lines.values(),
+        key=lambda line: (min(word[1] for word in line), min(word[0] for word in line)),
+    )
+
+    return "\n".join(
+        " ".join(word[4] for word in sorted(line, key=lambda word: word[7]))
+        for line in ordered_lines
+    )
+
+
+def _text_outside_tables(
+    raw_block,
+    page_words,
+    table_rects: list[pymupdf.Rect],
+) -> str:
+    original_text = raw_block[4].strip()
+    block_rect = pymupdf.Rect(raw_block[:4])
+
+    if not any(block_rect.intersects(table_rect) for table_rect in table_rects):
+        return original_text
+
+    if len(raw_block) <= 5:
+        return original_text
+
+    block_number = raw_block[5]
+    block_words = [word for word in page_words if word[5] == block_number]
+
+    if not block_words:
+        return original_text
+
+    table_words = [
+        word
+        for word in block_words
+        if _word_center_is_in_table(word, table_rects)
+    ]
+
+    if not table_words:
+        return original_text
+
+    remaining_words = [
+        word
+        for word in block_words
+        if not _word_center_is_in_table(word, table_rects)
+    ]
+
+    return _words_to_text(remaining_words)
+
 
 def parse_pdf(
     pdf_path: str | Path,
@@ -103,19 +173,19 @@ def parse_pdf(
         for current_page_number in selected_pages:
             page = pdf[current_page_number - 1]
             table_entries = _extract_table_entries(page)
+            table_rects = [table_rect for table_rect, _ in table_entries]
+            page_words = page.get_text("words", sort=True)
             ordered_entries = []
 
             for raw_block in page.get_text("blocks", sort=True):
                 rect = pymupdf.Rect(raw_block[:4])
-                text = raw_block[4].strip()
+                text = _text_outside_tables(
+                    raw_block,
+                    page_words,
+                    table_rects,
+                )
 
                 if not text:
-                    continue
-
-                if any(
-                    rect.intersects(table_rect)
-                    for table_rect, _ in table_entries
-                ):
                     continue
 
                 ordered_entries.append(

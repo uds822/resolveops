@@ -51,3 +51,10 @@ def test_pdf_document_preserves_table_structure(tmp_path):
     assert len(table_blocks) == 1
     assert table_blocks[0].table_data == expected
     assert "3.3.2 | Updated | 2.55.15" in table_blocks[0].content
+
+    page_text = [
+        block.content
+        for block in document.blocks
+        if block.type == BlockType.PAGE_TEXT
+    ]
+    assert not any("3.3.2" in content for content in page_text)
