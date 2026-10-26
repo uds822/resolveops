@@ -75,7 +75,6 @@ def _bbox_identity(page_number: int, rect: pymupdf.Rect) -> str:
     coordinates = ":".join(f"{value:.3f}" for value in rect)
     return f"page:{page_number}:bbox:{coordinates}"
 
-# this function checks if the center of a word is within any of the table rectangles
 def _word_center_is_in_table(
     word,
     table_rects: list[pymupdf.Rect],
@@ -90,60 +89,75 @@ def _word_center_is_in_table(
     )
 
 
-def _words_to_text(words) -> str:
-    lines = {}
-
-    for word in words:
-        line_key = (word[5], word[6])
-        lines.setdefault(line_key, []).append(word)
-
-    ordered_lines = sorted(
-        lines.values(),
-        key=lambda line: (min(word[1] for word in line), min(word[0] for word in line)),
+def _fragment_from_words(words) -> tuple[pymupdf.Rect, str]:
+    rect = pymupdf.Rect(
+        min(word[0] for word in words),
+        min(word[1] for word in words),
+        max(word[2] for word in words),
+        max(word[3] for word in words),
     )
+    text = " ".join(word[4] for word in words)
 
-    return "\n".join(
-        " ".join(word[4] for word in sorted(line, key=lambda word: word[7]))
-        for line in ordered_lines
-    )
+    return rect, text
 
 
-def _text_outside_tables(
+def _text_fragments_outside_tables(
     raw_block,
     page_words,
     table_rects: list[pymupdf.Rect],
-) -> str:
+) -> list[tuple[pymupdf.Rect, str]]:
     original_text = raw_block[4].strip()
     block_rect = pymupdf.Rect(raw_block[:4])
 
     if not any(block_rect.intersects(table_rect) for table_rect in table_rects):
-        return original_text
+        return [(block_rect, original_text)] if original_text else []
 
     if len(raw_block) <= 5:
-        return original_text
+        return [(block_rect, original_text)] if original_text else []
 
     block_number = raw_block[5]
     block_words = [word for word in page_words if word[5] == block_number]
 
     if not block_words:
-        return original_text
+        return [(block_rect, original_text)] if original_text else []
 
-    table_words = [
-        word
+    has_table_words = any(
+        _word_center_is_in_table(word, table_rects)
         for word in block_words
-        if _word_center_is_in_table(word, table_rects)
-    ]
+    )
 
-    if not table_words:
-        return original_text
+    if not has_table_words:
+        return [(block_rect, original_text)] if original_text else []
 
-    remaining_words = [
-        word
-        for word in block_words
-        if not _word_center_is_in_table(word, table_rects)
-    ]
+    lines = {}
+    for word in block_words:
+        line_key = (word[5], word[6])
+        lines.setdefault(line_key, []).append(word)
 
-    return _words_to_text(remaining_words)
+    ordered_lines = sorted(
+        lines.values(),
+        key=lambda line: (
+            min(word[1] for word in line),
+            min(word[0] for word in line),
+        ),
+    )
+    fragments: list[tuple[pymupdf.Rect, str]] = []
+
+    for line in ordered_lines:
+        current_words = []
+
+        for word in sorted(line, key=lambda item: item[7]):
+            if _word_center_is_in_table(word, table_rects):
+                if current_words:
+                    fragments.append(_fragment_from_words(current_words))
+                    current_words = []
+            else:
+                current_words.append(word)
+
+        if current_words:
+            fragments.append(_fragment_from_words(current_words))
+
+    return fragments
 
 
 def parse_pdf(
@@ -178,19 +192,23 @@ def parse_pdf(
             ordered_entries = []
 
             for raw_block in page.get_text("blocks", sort=True):
-                rect = pymupdf.Rect(raw_block[:4])
-                text = _text_outside_tables(
+                text_fragments = _text_fragments_outside_tables(
                     raw_block,
                     page_words,
                     table_rects,
                 )
 
-                if not text:
-                    continue
-
-                ordered_entries.append(
-                    (rect.y0, rect.x0, "text", rect, text, None)
-                )
+                for fragment_rect, text in text_fragments:
+                    ordered_entries.append(
+                        (
+                            fragment_rect.y0,
+                            fragment_rect.x0,
+                            "text",
+                            fragment_rect,
+                            text,
+                            None,
+                        )
+                    )
 
             for table_rect, rows in table_entries:
                 ordered_entries.append(
