@@ -1,6 +1,7 @@
 
 
 from pathlib import Path
+from typing import Literal
 
 import pymupdf
 
@@ -85,7 +86,7 @@ def extract_tables(page) -> list[list[list[str]]]:
 def _bbox_identity(page_number: int, rect: pymupdf.Rect) -> str:
     coordinates = ":".join(f"{value:.3f}" for value in rect)
     return f"page:{page_number}:bbox:{coordinates}"
-
+#calculate the center coordinate of every word on the page:
 def _word_center_is_in_table(
     word,
     table_rects: list[pymupdf.Rect],
@@ -176,7 +177,17 @@ def parse_pdf(
     page_number: int | None = None,
     *,
     source_id: str | None = None,
+    engine: Literal["pymupdf", "docling"] = "pymupdf",
 ) -> Document:
+    if engine == "docling":
+        from resolveops.ingestion.docling_pdf_parser import parse_pdf_with_docling
+
+        return parse_pdf_with_docling(
+            pdf_path, page_number=page_number, source_id=source_id
+        )
+    if engine != "pymupdf":
+        raise ValueError(f"Unsupported PDF engine: {engine}")
+
     path = Path(pdf_path)
 
     if not path.is_file():

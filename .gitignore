@@ -30,9 +30,11 @@ dist/
 
 # Generated extraction and profiling output
 data/profiling/
+graphify-out/
 
-# Large local source PDFs
+# Large local source PDFs and HTML browser assets
 data/raw/**/*.pdf
+data/raw/**/*_files/
 
 # Local environment files
 .env
