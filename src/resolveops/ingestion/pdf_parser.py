@@ -1,5 +1,6 @@
 
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -172,6 +173,25 @@ def _text_fragments_outside_tables(
     return fragments
 
 
+def _is_running_header_or_footer(text: str, rect: pymupdf.Rect, page_height: float) -> bool:
+    """Detect running headers, footers, and isolated page numbers in PDFs."""
+    clean = text.strip()
+    if not clean:
+        return True
+    # Standalone page numbers (e.g. '34', '12', 'iv')
+    if clean.isdigit() and len(clean) <= 4:
+        return True
+    # Common AWS running API Version footer: 'Setting up DynamoDB local (downloadable version) API Version 2012-08-10 34'
+    if "API Version" in clean and len(clean) < 120:
+        if re.search(r"API Version \d{4}-\d{2}-\d{2}", clean):
+            return True
+    # If in extreme top 45pt or bottom 45pt of page AND short text (< 80 chars)
+    if (rect.y1 > page_height - 45 or rect.y0 < 45) and len(clean) < 80:
+        if any(keyword in clean for keyword in ["API Version", "User Guide", "Developer Guide"]):
+            return True
+    return False
+
+
 def parse_pdf(
     pdf_path: str | Path,
     page_number: int | None = None,
@@ -221,6 +241,8 @@ def parse_pdf(
                 )
 
                 for fragment_rect, text in text_fragments:
+                    if _is_running_header_or_footer(text, fragment_rect, page.rect.height):
+                        continue
                     ordered_entries.append(
                         (
                             fragment_rect.y0,

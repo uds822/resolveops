@@ -61,6 +61,21 @@ This file records the project progress in brief form for revision and context. I
 - Entire test suite: all 48 tests passing (100%).
 - Important files: `src/resolveops/ingestion/pipeline.py`, `tests/test_pipeline.py`.
 
+### 2026-11-11 — Sparse BM25 and Hybrid Retrieval with Reciprocal Rank Fusion
+
+- Implemented `technical_tokenize()` in `src/resolveops/retrieval/bm25.py` to preserve dotted version numbers (`3.3.2`), snake_case, hyphens, and file extensions (`pom.xml`).
+- Implemented `BM25Index` for term-frequency retrieval and `HybridRetriever` combining Dense Vector search with BM25 using Reciprocal Rank Fusion (`rrf_k=60`).
+- Implemented unit tests and real AWS documentation tests in `tests/test_bm25.py` and `tests/test_hybrid.py`.
+
+### 2026-11-12 — Cross-Encoder Reranking and Empirical 2-Stage Benchmark
+
+- Implemented `Reranker` abstract base class, `NVIDIAReranker` (NVIDIA Nemotron 3.5 8B NIM API), `MockReranker`, and `make_reranker()` factory in `src/resolveops/retrieval/reranker.py`.
+- Implemented Sigmoid logit normalization (`_sigmoid`) mapping raw transformer logits to $[0.0, 1.0]$ probabilities.
+- Built `scripts/benchmark_with_reranker.py` benchmarking Hybrid Search vs Nemotron 8B Reranker across 90 chunks of AWS Markdown and Docling-parsed PDFs.
+- Empirical results proved the reranker eliminated the "BM25 keyword trap" on Lambda retries (`invocation-async.md` promoted from Rank #4 to #1) and promoted specific delegation concepts in IAM queries.
+- Authored comprehensive benchmark documentation in `docs/observation.md`.
+- Test suite: all 65 unit tests passing.
+
 ## Parser architecture and relationships
 
 The diagram below reflects the actual imports and calls in the parser source. `parse_document()` is the format dispatcher: it selects a parser from the file extension. Each parser builds the shared `Document` model from ordered `Block` objects.

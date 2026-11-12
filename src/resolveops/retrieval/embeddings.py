@@ -48,7 +48,10 @@ class LocalEmbeddingModel(EmbeddingModel):
                 "sentence-transformers is required for local models. "
                 "Install it with: pip install sentence-transformers"
             )
-        self._model = SentenceTransformer(model_name)
+        try:
+            self._model = SentenceTransformer(model_name, local_files_only=True)
+        except Exception:
+            self._model = SentenceTransformer(model_name)
         self.model_name = model_name
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
