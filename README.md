@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/Tests-Passing-10B981)](#-testing)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-ResolveOps is an end-to-end Retrieval-Augmented Generation (RAG) platform engineered specifically for complex, high-stakes technical documentation (AWS, Kubernetes, infrastructure guides). It combines **multi-engine layout-aware parsing**, **hybrid dense-sparse retrieval with a 3-way consistency handshake**, **two-stage cross-encoder reranking**, and **strict citation-grounded generation** to deliver mathematically verifiable, zero-hallucination answers.
+ResolveOps is an end-to-end Retrieval-Augmented Generation (RAG) platform engineered specifically for complex, high-stakes technical documentation (AWS, Kubernetes, infrastructure guides). It combines **multi-engine layout-aware parsing**, **hybrid dense-sparse retrieval with a 3-way consistency handshake**, **two-stage cross-encoder reranking**, and **strict citation-grounded generation** to deliver verifiable, high-precision answers with automated hallucination guardrails.
 
 ---
 
@@ -87,10 +87,15 @@ as well as chunk volume equality and SHA-256 BM25 checksums to prevent cross-sto
 
 - **Stage 2 — Cross-Encoder Reranker**: Employs **NVIDIA Nemotron 3.5 8B** (`nvidia/nemotron-3.5-rerank-8b`) to compute deep cross-attention over `(query, passage)` pairs, eliminating the "keyword trap" and promoting passages with direct answer entailment.
 
-### 4. Zero-Hallucination Generation & Citation Audit
+### 4. Citation Grounding, Provenance Auditing & Refusal Safeguards
 - **Strict Grounding Contract**: Every factual claim, code snippet, and configuration parameter is tethered to a numbered citation marker (`[1]`, `[2]`).
 - **Refusal Sanitization**: If a question is out-of-scope or unanswerable, the system explicitly refuses without phantom citations (`Citations: 0`), preventing false citation illusions.
+- **Automated Hallucination Detection**: The post-generation pipeline audits markers against retrieved context and detects ungrounded claims (`hallucinated_markers`).
 - **Pluggable LLM Adapters**: Native support for **DeepSeek-V3** (`openrouter:deepseek/deepseek-chat`) and **NVIDIA Llama-3.2-90B**, with an offline deterministic `MockLLMClient` for fast CI testing.
+
+> [!NOTE]
+> **Engineering Integrity Note on Hallucinations:**
+> No generative LLM can mathematically guarantee a 0% hallucination rate. ResolveOps is engineered to shift from blind trust to **verifiable provenance**: enforcing strict anti-hallucination grounding prompts, validating citation markers against retrieved context, stripping phantom citations on out-of-scope refusals, and isolating corrupted extractions behind quality gates.
 
 ### 5. ResolveOps Studio UI
 - Native **Flexbox layout** with independent, smooth scrolling containers.
