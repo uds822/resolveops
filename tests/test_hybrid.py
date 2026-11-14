@@ -388,3 +388,39 @@ def test_failed_replacement_preserves_existing_document():
     assert "orig_chunk" in vector_store._chunks
 
 
+@pytest.mark.parametrize("backend", ["memory", "qdrant"])
+def test_partial_sparse_replacement_restores_original_without_reembedding(backend):
+    from qdrant_client import QdrantClient
+    from resolveops.retrieval.vector_store import QdrantVectorStore
+
+    class FailingSparse(BM25Index):
+        def replace_document(self, document_id, chunks):
+            super().replace_document(document_id, chunks)
+            raise RuntimeError("partial sparse write")
+
+    embedder = MockEmbeddingModel()
+    store = (InMemoryVectorStore(embedder) if backend == "memory" else
+             QdrantVectorStore(embedder, client=QdrantClient(":memory:")))
+    sparse = FailingSparse()
+    retriever = HybridRetriever(store, sparse)
+    original = _make_chunk("old", "Original DynamoDB information")
+    retriever.add_chunks([original])
+    with pytest.raises(RuntimeError, match="partial sparse write"):
+        retriever.replace_document(original.document_id, [_make_chunk("new", "New S3 information")])
+    assert retriever.count() == 1
+    assert retriever.search("DynamoDB")[0].chunk.id == "old"
+    assert [c.id for c in sparse._chunks] == ["old"]
+
+
+def test_partial_sparse_add_rolls_back_both_stores():
+    class FailingSparse(BM25Index):
+        def add_chunks(self, chunks):
+            super().add_chunks(chunks[:1])
+            raise RuntimeError("partial write")
+
+    retriever = HybridRetriever(InMemoryVectorStore(MockEmbeddingModel()), FailingSparse())
+    with pytest.raises(RuntimeError, match="partial write"):
+        retriever.add_chunks([_make_chunk("a", "one"), _make_chunk("b", "two")])
+    assert retriever.count() == 0
+
+

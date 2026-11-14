@@ -200,3 +200,11 @@ def test_build_grounded_prompt_enforces_budget_on_oversized_first_chunk() -> Non
     # Check that the oversized content was truncated
     assert "[... content truncated to fit context budget ...]" in assembled.user_prompt or len(assembled.user_prompt) < 1000
 
+
+def test_oversized_table_is_skipped_without_losing_later_sources() -> None:
+    table = _make_dummy_chunk("table", "table.md", "header\n" + "row\n" * 1000).model_copy(update={"kind": "table"})
+    text = _make_dummy_chunk("text", "doc.md", "A short relevant passage.")
+    result = build_grounded_prompt("query", [table, text], max_chars_budget=200)
+    assert [citation.chunk_id for citation in result.citations] == ["text"]
+    assert "[1] Source: doc.md" in result.user_prompt
+

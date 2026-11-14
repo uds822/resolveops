@@ -201,7 +201,11 @@ def parse_pdf(
     source_id: str | None = None,
     engine: Literal["pymupdf", "docling"] = "pymupdf",
 ) -> Document:
+    if page_number is not None and page_range is not None:
+        raise ValueError("Choose page_number or page_range")
     if engine == "docling":
+        if page_range is not None and (not isinstance(page_range, tuple) or len(page_range) != 2):
+            raise ValueError("Docling page_range must be an inclusive (start, end) tuple")
         from resolveops.ingestion.docling_pdf_parser import parse_pdf_with_docling
 
         return parse_pdf_with_docling(

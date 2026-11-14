@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +42,7 @@ def generate_generation_id(prefix: str = "gen") -> str:
     """Generate a chronological, unique generation ID (e.g. gen_20261114_015400)."""
     now = datetime.datetime.now(datetime.timezone.utc)
     timestamp = now.strftime("%Y%m%d_%H%M%S")
-    return f"{prefix}_{timestamp}"
+    return f"{prefix}_{timestamp}_{uuid.uuid4().hex}"
 
 
 def save_manifest(filepath: str | Path, manifest: IndexManifest) -> None:

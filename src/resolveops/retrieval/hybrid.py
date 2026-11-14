@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import datetime
+import copy
+from functools import wraps
 from pathlib import Path
+from threading import RLock
 from typing import Sequence
 from pydantic import BaseModel, ConfigDict
 
@@ -16,6 +19,14 @@ from resolveops.retrieval.manifest import (
     verify_index_consistency,
 )
 from resolveops.retrieval.vector_store import VectorStore
+
+
+def synchronized(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class HybridSearchResult(BaseModel):
@@ -52,11 +63,13 @@ class HybridRetriever:
         self.rrf_k = rrf_k
         self.dense_weight = dense_weight
         self.bm25_weight = bm25_weight
+        self._lock = RLock()
         if hasattr(bm25_index, "_indexed_ids") and bm25_index._indexed_ids:
             self._indexed_ids: set[str] = set(bm25_index._indexed_ids)
         else:
             self._indexed_ids = set()
 
+    @synchronized
     def add_chunks(self, chunks: Sequence[Chunk]) -> int:
         """
         Index chunks into BOTH stores simultaneously, ensuring perfect lockstep.
@@ -77,7 +90,11 @@ class HybridRetriever:
             return 0
 
         # Step 1: Add to Dense VectorStore
-        dense_added = self.vector_store.add_chunks(new_chunks)
+        try:
+            dense_added = self.vector_store.add_chunks(new_chunks)
+        except Exception:
+            self.vector_store.delete_chunks([c.id for c in new_chunks])
+            raise
 
         # Step 2: Add to Sparse BM25Index with rollback protection
         try:
@@ -102,6 +119,7 @@ class HybridRetriever:
 
         return dense_added
 
+    @synchronized
     def delete_chunks(self, chunk_ids: Sequence[str]) -> int:
         """Remove specific chunks from both dense and sparse indices."""
         dense_removed = self.vector_store.delete_chunks(chunk_ids)
@@ -110,6 +128,7 @@ class HybridRetriever:
             self._indexed_ids.discard(cid)
         return min(dense_removed, sparse_removed)
 
+    @synchronized
     def delete_document(self, document_id: str) -> int:
         """Remove all chunks belonging to a document from both stores."""
         dense_removed = self.vector_store.delete_document(document_id)
@@ -118,60 +137,43 @@ class HybridRetriever:
             self._indexed_ids = set(self.bm25_index._indexed_ids)
         return min(dense_removed, sparse_removed)
 
+    @synchronized
     def replace_document(self, document_id: str, chunks: Sequence[Chunk]) -> tuple[int, int]:
         """Atomically replace document chunks across both stores with rollback protection."""
-        old_chunk_ids = [
-            cid for cid in self._indexed_ids
-            if getattr(getattr(self.vector_store, "_chunks", {}).get(cid), "document_id", None) == document_id
-            or any(c.id == cid and c.document_id == document_id for c in getattr(self.bm25_index, "_chunks", []))
-        ]
-        old_dense_chunks = [
-            self.vector_store._chunks[cid]
-            for cid in old_chunk_ids
-            if cid in getattr(self.vector_store, "_chunks", {})
-        ]
-
-        # Step 1: Execute replacement on dense store (validates embeddings first)
-        dense_deleted, dense_added = self.vector_store.replace_document(document_id, chunks)
-
-        # Step 2: Execute replacement on sparse store
+        if any(chunk.document_id != document_id for chunk in chunks):
+            raise ValueError("Replacement chunks must belong to the requested document")
+        dense_snapshot = self.vector_store.snapshot_document(document_id)
+        sparse_snapshot = copy.deepcopy(self.bm25_index.__dict__)
         try:
+            dense_deleted, dense_added = self.vector_store.replace_document(document_id, chunks)
             sparse_deleted, sparse_added = self.bm25_index.replace_document(document_id, chunks)
+            if dense_added != sparse_added or dense_deleted != sparse_deleted:
+                raise RuntimeError("Hybrid replacement desynchronization detected")
         except Exception as exc:
-            self.vector_store.delete_document(document_id)
-            if old_dense_chunks:
-                self.vector_store.add_chunks(old_dense_chunks)
-            raise RuntimeError(f"Sparse replacement failed; rolled back dense store: {exc}") from exc
+            self.bm25_index.__dict__.clear()
+            self.bm25_index.__dict__.update(sparse_snapshot)
+            try:
+                self.vector_store.restore_document(document_id, dense_snapshot)
+            except Exception as rollback_error:
+                raise RuntimeError("Replacement failed and dense rollback failed; index requires recovery") from rollback_error
+            raise
 
-        # Step 3: Validate lockstep consistency
-        if dense_added != sparse_added:
-            self.vector_store.delete_document(document_id)
-            self.bm25_index.delete_document(document_id)
-            if old_dense_chunks:
-                self.vector_store.add_chunks(old_dense_chunks)
-                self.bm25_index.add_chunks(old_dense_chunks)
-            raise RuntimeError(
-                f"Hybrid replacement desync: dense added {dense_added}, sparse added {sparse_added}. Rolled back."
-            )
-
-        # Step 4: Sync tracking IDs
-        for cid in old_chunk_ids:
-            self._indexed_ids.discard(cid)
-        for c in chunks:
-            if c.indexable:
-                self._indexed_ids.add(c.id)
+        self._indexed_ids = set(self.bm25_index._indexed_ids)
 
         return dense_deleted, dense_added
 
+    @synchronized
     def count(self) -> int:
         """Return total indexed chunk count, asserting dense and sparse are in lockstep."""
         dense_c = self.vector_store.count()
         sparse_c = self.bm25_index.count()
-        assert dense_c == sparse_c == len(self._indexed_ids), (
-            f"Hybrid index desync: dense={dense_c}, sparse={sparse_c}, tracking={len(self._indexed_ids)}"
-        )
+        if dense_c != sparse_c or dense_c != len(self._indexed_ids):
+            raise InconsistentIndexError(
+                f"Hybrid index desync: dense={dense_c}, sparse={sparse_c}, tracking={len(self._indexed_ids)}"
+            )
         return len(self._indexed_ids)
 
+    @synchronized
     def search(
         self,
         query: str,
@@ -250,6 +252,7 @@ class HybridRetriever:
             for cid in sorted_cids[:top_k]
         ]
 
+    @synchronized
     def save_state(
         self,
         manifest_path: str | Path,

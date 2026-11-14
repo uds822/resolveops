@@ -177,6 +177,10 @@ The FastAPI backend exposes the following endpoints (Interactive Swagger docs av
 | `POST` | `/api/v1/ingest` | Incremental document text ingestion endpoint with automatic deduplication. |
 | `DELETE` | `/api/v1/documents/{document_id}` | Atomically remove all indexed chunks belonging to a document. |
 
+Set `RESOLVEOPS_INGEST_API_KEY` to a private value and send it as `X-API-Key` for ingestion and deletion. Those endpoints return 503 when the key is unset and 401 for an incorrect key. Query and health endpoints do not require this key. Configure `RESOLVEOPS_CORS_ORIGINS` as a comma-separated list of trusted browser origins when using a separate frontend.
+
+With Qdrant, API mutations write a new BM25 snapshot and manifest. If a process stops during a mutation or checkpoint, startup rejects the inconsistent index; restore a consistent backup or rebuild the index. Embedded Qdrant storage must be owned by a single process.
+
 ---
 
 ## 🧪 Testing

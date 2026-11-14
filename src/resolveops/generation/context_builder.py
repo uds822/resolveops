@@ -112,6 +112,8 @@ def build_grounded_prompt(
     clean_query = query.strip()
     if not clean_query:
         raise ValueError("query cannot be empty or whitespace")
+    if max_chars_budget < 1:
+        raise ValueError("max_chars_budget must be positive")
 
     if not chunks:
         # Graceful fallback when 0 chunks are retrieved
@@ -131,11 +133,15 @@ def build_grounded_prompt(
     citations: list[CitationReference] = []
     current_chars = 0
 
-    for idx, chunk in enumerate(chunks, start=1):
+    for chunk in chunks:
+        idx = len(citations) + 1
         block_text, citation = format_single_chunk(chunk, index=idx)
 
         # Ensure we stay strictly within our safe character budget
         if current_chars + len(block_text) > max_chars_budget:
+            # A partial table can change the meaning of its rows and columns.
+            if chunk.kind == "table":
+                continue
             if formatted_blocks:
                 # Already have higher-ranked chunks; stop adding
                 break
@@ -153,7 +159,7 @@ def build_grounded_prompt(
                 bounded_chunk = chunk.model_copy(update={"content": truncated_text + trunc_suffix})
                 block_text, citation = format_single_chunk(bounded_chunk, index=idx)
             else:
-                block_text = block_text[:max_chars_budget]
+                continue
 
             formatted_blocks.append(block_text)
             citations.append(citation)
@@ -165,7 +171,7 @@ def build_grounded_prompt(
         current_chars += len(block_text) + 2
 
     separator = "─" * 80
-    context_section = "\n\n".join(formatted_blocks)
+    context_section = "\n\n".join(formatted_blocks) or "(No sources fit the context budget.)"
 
     user_prompt = (
         f"CONTEXT SOURCES:\n"

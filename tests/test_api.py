@@ -32,7 +32,7 @@ class MockEmbeddingModel(EmbeddingModel):
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """Fixture creating a test client with isolated mock retrieval dependencies."""
     embedder = MockEmbeddingModel()
     vector_store = InMemoryVectorStore(embedder)
@@ -43,7 +43,8 @@ def client() -> TestClient:
 
     service = RAGService(retriever, reranker, llm_client)
     app = create_app(rag_service=service, retriever=retriever)
-    return TestClient(app)
+    monkeypatch.setenv("RESOLVEOPS_INGEST_API_KEY", "test-ingestion-key")
+    return TestClient(app, headers={"X-API-Key": "test-ingestion-key"})
 
 
 def test_api_health_check(client: TestClient) -> None:
@@ -188,5 +189,40 @@ def test_api_deterministic_ids_and_replacement(client: TestClient) -> None:
     assert del_res.status_code == 200
     assert del_res.json()["chunks_deleted"] == 1
     assert del_res.json()["total_indexed"] == 0
+
+
+def test_mutations_require_configured_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {"source": "test.md", "content": "test"}
+    assert client.post("/api/v1/ingest", json=payload, headers={"X-API-Key": "wrong"}).status_code == 401
+    assert client.delete("/api/v1/documents/example", headers={"X-API-Key": "wrong"}).status_code == 401
+    monkeypatch.delenv("RESOLVEOPS_INGEST_API_KEY")
+    assert client.post("/api/v1/ingest", json=payload).status_code == 503
+
+
+def test_ingestion_rejects_oversized_request_before_json_parsing(client: TestClient) -> None:
+    response = client.post("/api/v1/ingest", content=b"x" * 4_200_001,
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == 413
+
+
+def test_qdrant_api_mutation_saves_consistent_snapshot(tmp_path, monkeypatch):
+    from qdrant_client import QdrantClient
+    from resolveops.retrieval.manifest import verify_index_consistency
+    from resolveops.retrieval.vector_store import QdrantVectorStore
+
+    monkeypatch.setenv("RESOLVEOPS_INGEST_API_KEY", "key")
+    manifest_path = tmp_path / "manifest.json"
+    bm25_path = tmp_path / "bm25.json"
+    monkeypatch.setenv("RESOLVEOPS_MANIFEST_PATH", str(manifest_path))
+    monkeypatch.setenv("RESOLVEOPS_BM25_PATH", str(bm25_path))
+    store = QdrantVectorStore(MockEmbeddingModel(), client=QdrantClient(":memory:"))
+    sparse = BM25Index()
+    retriever = HybridRetriever(store, sparse)
+    service = RAGService(retriever, MockReranker(), MockLLMClient())
+    test_client = TestClient(create_app(service, retriever), headers={"X-API-Key": "key"})
+    response = test_client.post("/api/v1/ingest", json={"source": "guide.md", "content": "IAM role"})
+    assert response.status_code == 200
+    loaded = BM25Index.load_snapshot(bm25_path)
+    assert verify_index_consistency(manifest_path, store, loaded).chunk_count == 1
 
 

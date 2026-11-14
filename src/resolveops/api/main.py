@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from resolveops.generation.llm import MockLLMClient, make_llm_client
 from resolveops.ingestion.chunking import Chunk
@@ -20,7 +22,7 @@ from resolveops.ingestion.models import SourceType
 from resolveops.retrieval.bm25 import BM25Index
 from resolveops.retrieval.embeddings import make_embedding_model
 from resolveops.retrieval.hybrid import HybridRetriever
-from resolveops.retrieval.manifest import InconsistentIndexError, load_manifest, verify_index_consistency
+from resolveops.retrieval.manifest import InconsistentIndexError, generate_generation_id, load_manifest, verify_index_consistency
 from resolveops.retrieval.reranker import make_reranker
 from resolveops.retrieval.vector_store import InMemoryVectorStore, QdrantVectorStore
 from resolveops.service import RAGResponse, RAGService
@@ -44,15 +46,62 @@ class IngestTextRequest(BaseModel):
 
     source: str = Field(min_length=1, max_length=500, description="Source filename or origin path (e.g. guide.md)")
     content: str = Field(min_length=1, max_length=1_000_000, description="Body text content to index (max 1MB)")
-    document_title: str | None = Field(default=None, description="Human-readable title of document")
-    heading_context: list[str] = Field(default_factory=list, description="Section heading hierarchy")
-    page_numbers: list[int] = Field(default_factory=list, description="PDF page numbers if applicable")
+    document_title: str | None = Field(default=None, max_length=500, description="Human-readable title of document")
+    heading_context: list[Annotated[str, StringConstraints(max_length=500)]] = Field(default_factory=list, max_length=20, description="Section heading hierarchy")
+    page_numbers: list[Annotated[int, Field(ge=1)]] = Field(default_factory=list, max_length=1000, description="PDF page numbers if applicable")
     replace: bool = Field(default=True, description="Replace existing document chunks for this source if present")
+
+
+class IngestionBodyLimit:
+    """Bound request bytes before FastAPI parses the JSON body."""
+
+    def __init__(self, app, limit: int = 4_200_000):
+        self.app = app
+        self.limit = limit
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"] != "/api/v1/ingest" or scope["method"] != "POST":
+            await self.app(scope, receive, send)
+            return
+        chunks = []
+        total = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                return
+            chunk = message.get("body", b"")
+            total += len(chunk)
+            if total > self.limit:
+                await JSONResponse({"detail": "Ingestion request is too large"}, status_code=413)(scope, receive, send)
+                return
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+        body = b"".join(chunks)
+        delivered = False
+
+        async def replay():
+            nonlocal delivered
+            if not delivered:
+                delivered = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Application Factory
 # ─────────────────────────────────────────────────────────────────────────────
+
+def require_ingestion_key(x_api_key: str | None = Header(default=None)) -> None:
+    """Fail closed for index mutations until an administrator configures a key."""
+    configured = os.environ.get("RESOLVEOPS_INGEST_API_KEY")
+    if not configured:
+        raise HTTPException(status_code=503, detail="Ingestion is not configured")
+    if x_api_key is None or not secrets.compare_digest(x_api_key.encode("utf-8"), configured.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid ingestion credentials")
+
 
 def preload_sample_corpus(retriever: HybridRetriever) -> int:
     """Preload sample AWS documentation on startup so the search index is ready immediately."""
@@ -109,6 +158,8 @@ def build_default_rag_service() -> tuple[RAGService, HybridRetriever]:
             bm25 = BM25Index.load_snapshot(bm25_path)
             verify_index_consistency(manifest_path, vector_store, bm25)
         else:
+            if vector_store.count() or bm25_path.exists() or manifest_path.exists():
+                raise InconsistentIndexError("Incomplete persistent index: manifest and BM25 snapshot are required")
             bm25 = BM25Index()
     else:
         vector_store = InMemoryVectorStore(embedder)
@@ -194,6 +245,8 @@ def create_app(
         lifespan=app_lifespan,
     )
 
+    app.add_middleware(IngestionBodyLimit)
+
     # Restrict CORS to configured origins
     cors_origins = [o.strip() for o in os.environ.get("RESOLVEOPS_CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",") if o.strip()]
     app.add_middleware(
@@ -207,6 +260,17 @@ def create_app(
     # Attach injected dependencies immediately if provided
     app.state.rag_service = rag_service
     app.state.retriever = retriever
+
+    def persist_mutation(retriever_inst: HybridRetriever) -> None:
+        if isinstance(retriever_inst.vector_store, QdrantVectorStore):
+            retriever_inst.save_state(
+                os.environ.get("RESOLVEOPS_MANIFEST_PATH", "./data/index_manifest.json"),
+                os.environ.get("RESOLVEOPS_BM25_PATH", "./data/bm25_index.json"),
+            )
+
+    def mark_mutation_pending(retriever_inst: HybridRetriever) -> None:
+        if isinstance(retriever_inst.vector_store, QdrantVectorStore):
+            retriever_inst.vector_store.set_generation_id(generate_generation_id("pending"))
 
     # ── Health Check ─────────────────────────────────────────────────────────
     @app.get("/health", tags=["System"])
@@ -253,7 +317,7 @@ def create_app(
             ) from exc
 
     # ── Ingest Text Endpoint ─────────────────────────────────────────────────
-    @app.post("/api/v1/ingest", tags=["Ingestion"])
+    @app.post("/api/v1/ingest", tags=["Ingestion"], dependencies=[Depends(require_ingestion_key)])
     def ingest_text_endpoint(req: IngestTextRequest) -> dict[str, Any]:
         clean_content = req.content.strip()
         if not clean_content:
@@ -291,11 +355,14 @@ def create_app(
         )
 
         # Atomic document replacement: validates replacement chunks BEFORE deleting existing ones
-        if req.replace:
-            deleted_count, added = retriever_inst.replace_document(doc_id, [chunk])
-        else:
-            deleted_count = 0
-            added = retriever_inst.add_chunks([chunk])
+        with retriever_inst._lock:
+            mark_mutation_pending(retriever_inst)
+            if req.replace:
+                deleted_count, added = retriever_inst.replace_document(doc_id, [chunk])
+            else:
+                deleted_count = 0
+                added = retriever_inst.add_chunks([chunk])
+            persist_mutation(retriever_inst)
         return {
             "status": "success",
             "source": req.source,
@@ -307,10 +374,13 @@ def create_app(
         }
 
     # ── Delete Document Endpoint ─────────────────────────────────────────────
-    @app.delete("/api/v1/documents/{document_id}", tags=["Ingestion"])
+    @app.delete("/api/v1/documents/{document_id}", tags=["Ingestion"], dependencies=[Depends(require_ingestion_key)])
     def delete_document_endpoint(document_id: str) -> dict[str, Any]:
         retriever_inst: HybridRetriever = app.state.retriever
-        deleted = retriever_inst.delete_document(document_id)
+        with retriever_inst._lock:
+            mark_mutation_pending(retriever_inst)
+            deleted = retriever_inst.delete_document(document_id)
+            persist_mutation(retriever_inst)
         return {
             "status": "success",
             "document_id": document_id,

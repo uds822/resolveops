@@ -100,6 +100,16 @@ class InMemoryVectorStore(VectorStore):
     def set_generation_id(self, generation_id: str) -> None:
         self.generation_id = generation_id
 
+    def snapshot_document(self, document_id: str):
+        return [(chunk, self._vectors[cid].copy()) for cid, chunk in self._chunks.items()
+                if chunk.document_id == document_id]
+
+    def restore_document(self, document_id: str, snapshot) -> None:
+        self.delete_document(document_id)
+        for chunk, vector in snapshot:
+            self._chunks[chunk.id] = chunk
+            self._vectors[chunk.id] = vector
+
     def add_chunks(self, chunks: Sequence[Chunk]) -> int:
         """
         Embed and store chunks with strict validation and batch-level deduplication.
@@ -385,6 +395,26 @@ class QdrantVectorStore(VectorStore):
         except Exception:
             pass
         return None
+
+    def snapshot_document(self, document_id: str):
+        condition = qmodels.Filter(must=[qmodels.FieldCondition(
+            key="document_id", match=qmodels.MatchValue(value=document_id))])
+        points = []
+        offset = None
+        while True:
+            batch, offset = self.client.scroll(collection_name=self.collection_name,
+                scroll_filter=condition, limit=256, offset=offset,
+                with_payload=True, with_vectors=True)
+            points.extend(batch)
+            if offset is None:
+                return points
+
+    def restore_document(self, document_id: str, snapshot) -> None:
+        self.delete_document(document_id)
+        if snapshot:
+            self.client.upsert(collection_name=self.collection_name, points=[
+                qmodels.PointStruct(id=p.id, vector=p.vector, payload=p.payload) for p in snapshot
+            ], wait=True)
 
     def set_generation_id(self, generation_id: str) -> None:
         """Persist collection generation ID into the sentinel point."""
