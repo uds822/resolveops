@@ -1,4 +1,5 @@
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -12,6 +13,7 @@ def parse_document(
     file_path: str | Path,
     page_number: int | None = None,
     *,
+    page_range: tuple[int, int] | Sequence[int] | None = None,
     source_id: str | None = None,
     pdf_engine: Literal["pymupdf", "docling"] = "pymupdf",
 ) -> Document:
@@ -20,7 +22,11 @@ def parse_document(
 
     if ext == ".pdf":
         return parse_pdf(
-            path, page_number=page_number, source_id=source_id, engine=pdf_engine
+            path,
+            page_number=page_number,
+            page_range=page_range,
+            source_id=source_id,
+            engine=pdf_engine,
         )
 
     if ext in {".html", ".htm"}:

@@ -167,7 +167,7 @@ def test_parse_pdf_can_select_docling_engine(tmp_path, monkeypatch):
     path.write_bytes(b"pdf supplied to the selected engine")
     expected = object()
 
-    def fake_parse(pdf_path, page_number=None, *, source_id=None):
+    def fake_parse(pdf_path, page_number=None, *, page_range=None, source_id=None):
         assert (pdf_path, page_number, source_id) == (path, 1, "guide-source")
         return expected
 

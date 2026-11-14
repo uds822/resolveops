@@ -81,6 +81,7 @@ class RemoteEmbeddingModel(EmbeddingModel):
         base_url: str,
         api_key: str | None = None,
         timeout: float = 30.0,
+        batch_size: int = 32,
     ):
         if not api_key:
             raise ValueError(
@@ -91,6 +92,10 @@ class RemoteEmbeddingModel(EmbeddingModel):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        if "nemotron-3.5-embed-1b" in model_name:
+            self.batch_size = 2
+        else:
+            self.batch_size = batch_size
 
     def _post(self, texts: list[str], input_type: str = "passage") -> list[list[float]]:
         import requests
@@ -120,10 +125,9 @@ class RemoteEmbeddingModel(EmbeddingModel):
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        batch_size = 32
         all_embeddings: list[list[float]] = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i : i + self.batch_size]
             all_embeddings.extend(self._post(batch, input_type="passage"))
         return all_embeddings
 
@@ -132,17 +136,26 @@ class RemoteEmbeddingModel(EmbeddingModel):
         return results[0]
 
 
-def make_embedding_model(model_name: str = "all-MiniLM-L6-v2") -> EmbeddingModel:
+def make_embedding_model(model_name: str | None = None) -> EmbeddingModel:
     """Factory function creating local or cloud embedding models.
 
     Supported prefixes:
       - "nvidia:<model>"     -> Uses NVIDIA NIM API (reads NVIDIA_API_KEY from .env)
-                                Default model: "nvidia/nv-embedqa-e5-v5"
+                                Default model: "nvidia/nemotron-3.5-embed-1b"
       - "openrouter:<model>" -> Uses OpenRouter API (reads OPENROUTER_API_KEY from .env)
       - "<huggingface-name>" -> Uses local SentenceTransformers (e.g. "all-MiniLM-L6-v2")
     """
+    if model_name is None:
+        model_name = os.environ.get("RESOLVEOPS_EMBED_MODEL")
+        if not model_name:
+            model_name = (
+                "nvidia:nvidia/nemotron-3.5-embed-1b"
+                if os.environ.get("NVIDIA_API_KEY")
+                else "all-MiniLM-L6-v2"
+            )
+
     if model_name.startswith("nvidia:"):
-        actual_model = model_name.removeprefix("nvidia:") or "nvidia/nv-embedqa-e5-v5"
+        actual_model = model_name.removeprefix("nvidia:") or "nvidia/nemotron-3.5-embed-1b"
         api_key = os.environ.get("NVIDIA_API_KEY")
         return RemoteEmbeddingModel(
             model_name=actual_model,

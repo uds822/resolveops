@@ -223,3 +223,168 @@ def test_hybrid_retriever_on_real_aws_documentation():
     winner_2 = r2[0]
     assert "Time To Live" in winner_2.chunk.content or "TTL" in winner_2.chunk.content
     assert winner_2.dense_rank == 1
+
+
+def test_hybrid_batch_deduplication_preserves_lockstep():
+    """Verify that adding duplicate chunks in one batch only adds 1 entry to both stores."""
+    vector_store = InMemoryVectorStore(MockEmbeddingModel())
+    bm25 = BM25Index()
+    retriever = HybridRetriever(vector_store, bm25)
+
+    c1 = _make_chunk("chunk_dup", "Same exact chunk content")
+    added = retriever.add_chunks([c1, c1, c1])
+
+    assert added == 1
+    assert retriever.count() == 1
+    assert vector_store.count() == 1
+    assert bm25.count() == 1
+
+
+class BrokenEmbeddingModel(EmbeddingModel):
+    """Simulates an embedding model that returns fewer vectors than chunks."""
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        # Always returns 1 vector regardless of how many texts were sent
+        return [[1.0, 0.0, 0.0]]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+
+def test_hybrid_embedding_count_mismatch_fails_and_rolls_back():
+    """Verify that embedding length mismatch raises ValueError and leaves both stores empty."""
+    vector_store = InMemoryVectorStore(BrokenEmbeddingModel())
+    bm25 = BM25Index()
+    retriever = HybridRetriever(vector_store, bm25)
+
+    c1 = _make_chunk("chunk_1", "First chunk")
+    c2 = _make_chunk("chunk_2", "Second chunk")
+
+    with pytest.raises(ValueError, match="Embedding count mismatch"):
+        retriever.add_chunks([c1, c2])
+
+    assert retriever.count() == 0
+    assert vector_store.count() == 0
+    assert bm25.count() == 0
+
+
+class NanEmbeddingModel(EmbeddingModel):
+    """Simulates an embedding model that returns NaNs."""
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[float("nan"), 0.0, 0.0] for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+
+def test_hybrid_nan_embedding_validation_failure():
+    """Verify that non-finite embedding vectors raise ValueError and roll back."""
+    vector_store = InMemoryVectorStore(NanEmbeddingModel())
+    bm25 = BM25Index()
+    retriever = HybridRetriever(vector_store, bm25)
+
+    c1 = _make_chunk("chunk_nan", "Chunk with bad vector")
+    with pytest.raises(ValueError, match="contains non-finite values"):
+        retriever.add_chunks([c1])
+
+    assert retriever.count() == 0
+    assert vector_store.count() == 0
+    assert bm25.count() == 0
+
+
+def test_hybrid_delete_document_and_chunks():
+    """Verify deletion removes chunks from both stores in perfect sync."""
+    vector_store = InMemoryVectorStore(MockEmbeddingModel())
+    bm25 = BM25Index()
+    retriever = HybridRetriever(vector_store, bm25)
+
+    c1 = _make_chunk("chunk_a", "DynamoDB tables")
+    c2 = _make_chunk("chunk_b", "S3 buckets")
+    retriever.add_chunks([c1, c2])
+    assert retriever.count() == 2
+
+    # Delete 1 chunk
+    removed = retriever.delete_chunks(["chunk_a"])
+    assert removed == 1
+    assert retriever.count() == 1
+    assert vector_store.count() == 1
+    assert bm25.count() == 1
+
+    # Delete by document
+    doc_removed = retriever.delete_document("doc-aws-1")
+    assert doc_removed == 1
+    assert retriever.count() == 0
+    assert vector_store.count() == 0
+    assert bm25.count() == 0
+
+
+class DynamicDimensionEmbedder(EmbeddingModel):
+    """Returns vectors with dynamic dimensionality based on call."""
+    def __init__(self, dims: list[int]):
+        self.dims = dims
+        self.call_idx = 0
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        dim = self.dims[self.call_idx]
+        self.call_idx = min(self.call_idx + 1, len(self.dims) - 1)
+        return [[1.0] * dim for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [1.0] * self.dims[0]
+
+
+def test_multi_batch_dimension_mismatch_rejected():
+    """Verify that a second batch with different vector dimension is rejected."""
+    # First batch returns 3D vectors, second batch returns 2D vectors
+    embedder = DynamicDimensionEmbedder(dims=[3, 2])
+    vector_store = InMemoryVectorStore(embedder)
+    bm25 = BM25Index()
+    retriever = HybridRetriever(vector_store, bm25)
+
+    c1 = _make_chunk("c1", "Batch 1 content")
+    retriever.add_chunks([c1])
+    assert retriever.count() == 1
+
+    c2 = _make_chunk("c2", "Batch 2 content with different dimensions")
+    with pytest.raises(ValueError, match="Vector dimension mismatch"):
+        retriever.add_chunks([c2])
+
+    # First batch must still be intact
+    assert retriever.count() == 1
+    assert vector_store.count() == 1
+    assert bm25.count() == 1
+
+
+def test_failed_replacement_preserves_existing_document():
+    """Verify that if replacement fails during embedding, the existing document is preserved."""
+    # First call succeeds with 3D vector, second call fails with length mismatch
+    class FlakyEmbedder(EmbeddingModel):
+        def __init__(self):
+            self.first = True
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            if self.first:
+                self.first = False
+                return [[1.0, 0.0, 0.0]]
+            raise RuntimeError("Simulated embedding outage")
+        def embed_query(self, text: str) -> list[float]:
+            return [1.0, 0.0, 0.0]
+
+    vector_store = InMemoryVectorStore(FlakyEmbedder())
+    bm25 = BM25Index()
+    retriever = HybridRetriever(vector_store, bm25)
+
+    c_orig = _make_chunk("orig_chunk", "Original document content")
+    retriever.add_chunks([c_orig])
+    assert retriever.count() == 1
+
+    # Attempt to replace document, but embedding fails
+    c_new = _make_chunk("new_chunk", "New document content")
+    with pytest.raises(RuntimeError, match="Simulated embedding outage"):
+        retriever.replace_document("doc-aws-1", [c_new])
+
+    # Crucial assertion: original document was NOT deleted!
+    assert retriever.count() == 1
+    assert vector_store.count() == 1
+    assert bm25.count() == 1
+    assert "orig_chunk" in vector_store._chunks
+
+

@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import datetime
+from pathlib import Path
 from typing import Sequence
 from pydantic import BaseModel, ConfigDict
 
 from resolveops.ingestion.chunking import Chunk
 from resolveops.retrieval.bm25 import BM25Index
+from resolveops.retrieval.manifest import (
+    IndexManifest,
+    InconsistentIndexError,
+    compute_file_sha256,
+    generate_generation_id,
+    save_manifest,
+    verify_index_consistency,
+)
 from resolveops.retrieval.vector_store import VectorStore
 
 
@@ -42,29 +52,125 @@ class HybridRetriever:
         self.rrf_k = rrf_k
         self.dense_weight = dense_weight
         self.bm25_weight = bm25_weight
-        self._indexed_ids: set[str] = set()
+        if hasattr(bm25_index, "_indexed_ids") and bm25_index._indexed_ids:
+            self._indexed_ids: set[str] = set(bm25_index._indexed_ids)
+        else:
+            self._indexed_ids = set()
 
     def add_chunks(self, chunks: Sequence[Chunk]) -> int:
         """
         Index chunks into BOTH stores simultaneously, ensuring perfect lockstep.
-        Automatically deduplicates and skips quarantined unindexable chunks.
+        Enforces batch-level deduplication and rolls back if either store fails.
         """
-        # Filter for valid, un-indexed chunks
-        new_chunks = [
-            c for c in chunks
-            if c.indexable and c.id not in self._indexed_ids
-        ]
+        seen_in_batch: set[str] = set()
+        new_chunks: list[Chunk] = []
+
+        for c in chunks:
+            if not c.indexable:
+                continue
+            if c.id in self._indexed_ids or c.id in seen_in_batch:
+                continue
+            seen_in_batch.add(c.id)
+            new_chunks.append(c)
+
         if not new_chunks:
             return 0
 
-        # Index into Dense and Sparse stores
-        self.vector_store.add_chunks(new_chunks)
-        self.bm25_index.add_chunks(new_chunks)
+        # Step 1: Add to Dense VectorStore
+        dense_added = self.vector_store.add_chunks(new_chunks)
+
+        # Step 2: Add to Sparse BM25Index with rollback protection
+        try:
+            sparse_added = self.bm25_index.add_chunks(new_chunks)
+        except Exception as exc:
+            new_ids = [c.id for c in new_chunks]
+            self.vector_store.delete_chunks(new_ids)
+            self.bm25_index.delete_chunks(new_ids)
+            raise RuntimeError(f"Sparse indexing failed; rolled back both stores: {exc}") from exc
+
+        # Step 3: Validate lockstep consistency
+        if dense_added != sparse_added:
+            new_ids = [c.id for c in new_chunks]
+            self.vector_store.delete_chunks(new_ids)
+            self.bm25_index.delete_chunks(new_ids)
+            raise RuntimeError(
+                f"Hybrid index desynchronization detected: dense added {dense_added}, sparse added {sparse_added}. Rolled back both stores."
+            )
 
         for c in new_chunks:
             self._indexed_ids.add(c.id)
 
-        return len(new_chunks)
+        return dense_added
+
+    def delete_chunks(self, chunk_ids: Sequence[str]) -> int:
+        """Remove specific chunks from both dense and sparse indices."""
+        dense_removed = self.vector_store.delete_chunks(chunk_ids)
+        sparse_removed = self.bm25_index.delete_chunks(chunk_ids)
+        for cid in chunk_ids:
+            self._indexed_ids.discard(cid)
+        return min(dense_removed, sparse_removed)
+
+    def delete_document(self, document_id: str) -> int:
+        """Remove all chunks belonging to a document from both stores."""
+        dense_removed = self.vector_store.delete_document(document_id)
+        sparse_removed = self.bm25_index.delete_document(document_id)
+        if hasattr(self.bm25_index, "_indexed_ids"):
+            self._indexed_ids = set(self.bm25_index._indexed_ids)
+        return min(dense_removed, sparse_removed)
+
+    def replace_document(self, document_id: str, chunks: Sequence[Chunk]) -> tuple[int, int]:
+        """Atomically replace document chunks across both stores with rollback protection."""
+        old_chunk_ids = [
+            cid for cid in self._indexed_ids
+            if getattr(getattr(self.vector_store, "_chunks", {}).get(cid), "document_id", None) == document_id
+            or any(c.id == cid and c.document_id == document_id for c in getattr(self.bm25_index, "_chunks", []))
+        ]
+        old_dense_chunks = [
+            self.vector_store._chunks[cid]
+            for cid in old_chunk_ids
+            if cid in getattr(self.vector_store, "_chunks", {})
+        ]
+
+        # Step 1: Execute replacement on dense store (validates embeddings first)
+        dense_deleted, dense_added = self.vector_store.replace_document(document_id, chunks)
+
+        # Step 2: Execute replacement on sparse store
+        try:
+            sparse_deleted, sparse_added = self.bm25_index.replace_document(document_id, chunks)
+        except Exception as exc:
+            self.vector_store.delete_document(document_id)
+            if old_dense_chunks:
+                self.vector_store.add_chunks(old_dense_chunks)
+            raise RuntimeError(f"Sparse replacement failed; rolled back dense store: {exc}") from exc
+
+        # Step 3: Validate lockstep consistency
+        if dense_added != sparse_added:
+            self.vector_store.delete_document(document_id)
+            self.bm25_index.delete_document(document_id)
+            if old_dense_chunks:
+                self.vector_store.add_chunks(old_dense_chunks)
+                self.bm25_index.add_chunks(old_dense_chunks)
+            raise RuntimeError(
+                f"Hybrid replacement desync: dense added {dense_added}, sparse added {sparse_added}. Rolled back."
+            )
+
+        # Step 4: Sync tracking IDs
+        for cid in old_chunk_ids:
+            self._indexed_ids.discard(cid)
+        for c in chunks:
+            if c.indexable:
+                self._indexed_ids.add(c.id)
+
+        return dense_deleted, dense_added
+
+    def count(self) -> int:
+        """Return total indexed chunk count, asserting dense and sparse are in lockstep."""
+        dense_c = self.vector_store.count()
+        sparse_c = self.bm25_index.count()
+        assert dense_c == sparse_c == len(self._indexed_ids), (
+            f"Hybrid index desync: dense={dense_c}, sparse={sparse_c}, tracking={len(self._indexed_ids)}"
+        )
+        return len(self._indexed_ids)
 
     def search(
         self,
@@ -144,6 +250,54 @@ class HybridRetriever:
             for cid in sorted_cids[:top_k]
         ]
 
-    def count(self) -> int:
-        """Return the number of uniquely indexed chunks."""
-        return len(self._indexed_ids)
+    def save_state(
+        self,
+        manifest_path: str | Path,
+        bm25_path: str | Path,
+        generation_id: str | None = None,
+    ) -> IndexManifest:
+        """
+        Atomically persist hybrid retrieval state to disk:
+        1. Generates new unique generation ID if none provided.
+        2. Stamps dense vector store with the generation ID.
+        3. Saves BM25 snapshot with the generation ID.
+        4. Calculates BM25 snapshot SHA-256 checksum.
+        5. Assembles authoritative IndexManifest and writes to disk atomically.
+        """
+        gen_id = generation_id or generate_generation_id()
+        self.vector_store.set_generation_id(gen_id)
+        self.bm25_index.save_snapshot(bm25_path, generation_id=gen_id)
+
+        bm25_file = Path(bm25_path).resolve()
+        bm25_hash = compute_file_sha256(bm25_file)
+
+        embed_model = getattr(self.vector_store, "embedding_model", None)
+        model_name = getattr(embed_model, "model_name", "unknown")
+        dim = getattr(self.vector_store, "vector_dimension", 0)
+        if dim == 0 and hasattr(embed_model, "embed_query"):
+            dim = len(embed_model.embed_query("dim_probe"))
+
+        col_name = getattr(self.vector_store, "collection_name", "memory")
+
+        manifest = IndexManifest(
+            schema_version=1,
+            generation_id=gen_id,
+            updated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            chunk_count=self.count(),
+            embedding_model=str(model_name),
+            vector_dimension=int(dim),
+            distance_metric="Cosine",
+            qdrant_collection=str(col_name),
+            bm25_snapshot_file=bm25_file.name,
+            bm25_checksum=bm25_hash,
+        )
+        save_manifest(manifest_path, manifest)
+        return manifest
+
+    def verify_consistency(self, manifest_path: str | Path) -> IndexManifest:
+        """Verify cross-store consistency against the manifest."""
+        return verify_index_consistency(
+            manifest_path=manifest_path,
+            vector_store=self.vector_store,
+            bm25_index=self.bm25_index,
+        )

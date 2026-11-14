@@ -169,3 +169,43 @@ def test_real_pdf_preserves_order_around_table(tmp_path):
 
     assert before_bbox[3] <= table_bbox[1]
     assert table_bbox[3] <= after_bbox[1]
+
+
+def test_parse_pdf_honors_page_range(tmp_path):
+    """Verify that parse_pdf with PyMuPDF extracts only the requested page range."""
+    path = tmp_path / "multipage.pdf"
+
+    with pymupdf.open() as pdf:
+        p1 = pdf.new_page()
+        p1.insert_text((72, 72), "Page 1 Content")
+        p2 = pdf.new_page()
+        p2.insert_text((72, 72), "Page 2 Content")
+        p3 = pdf.new_page()
+        p3.insert_text((72, 72), "Page 3 Content")
+        pdf.save(path)
+
+    # Request only page 2 of 3
+    doc = parse_pdf(path, page_range=(2, 2))
+
+    assert doc.metadata["page_count"] == 3
+    assert doc.metadata["parsed_pages"] == [2]
+    assert len(doc.blocks) == 1
+    assert doc.blocks[0].page_number == 2
+    assert "Page 2 Content" in doc.blocks[0].content
+    assert "Page 1 Content" not in doc.blocks[0].content
+
+
+def test_parse_pdf_rejects_inverted_page_range(tmp_path):
+    """Verify that an inverted page range like (3, 1) raises ValueError."""
+    path = tmp_path / "multipage2.pdf"
+
+    with pymupdf.open() as pdf:
+        pdf.new_page()
+        pdf.new_page()
+        pdf.new_page()
+        pdf.save(path)
+
+    with pytest.raises(ValueError, match="cannot be greater than end page"):
+        parse_pdf(path, page_range=(3, 1))
+
+

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ResolveOps — Technical RAG Dashboard</title>
+  <link rel="stylesheet" href="styles.css?v=2">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+  <!-- Application Container -->
+  <div class="app-layout">
+    
+    <!-- Top Header -->
+    <header class="top-nav">
+      <div class="nav-brand">
+        <div class="brand-icon">⚡</div>
+        <div class="brand-text">
+          <h1>ResolveOps</h1>
+          <span class="brand-badge">RAG Studio</span>
+        </div>
+      </div>
+
+      <div class="nav-controls">
+        <div id="backend-status" class="status-pill status-connecting">
+          <span class="status-dot"></span>
+          <span class="status-label">Connecting to Backend...</span>
+        </div>
+        <button id="config-btn" class="icon-button" title="Settings & Telemetry">⚙️</button>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="workspace-grid">
+
+      <!-- Left / Center: Chat & QA Section -->
+      <section class="chat-section">
+        
+        <!-- Preset Query Chips -->
+        <div class="presets-bar">
+          <span class="presets-title">Sample Queries:</span>
+          <button class="preset-chip" data-query="AccessDeniedException 400 Signature Version 4 signing">🔑 Error Codes</button>
+          <button class="preset-chip" data-query="what happens when a Lambda function fails and how are retries handled?">🔄 Lambda Retries</button>
+          <button class="preset-chip" data-query="DynamoDB local version 3.3.2 pom.xml dependencies">📦 DynamoDB 3.3.2</button>
+          <button class="preset-chip" data-query="automatically expire and delete old items without consuming write throughput">⏰ TTL Expiry</button>
+          <button class="preset-chip" data-query="IAM role assume cross-account delegation temporary credentials">🔐 IAM Delegation</button>
+          <button class="preset-chip" data-query="Are S3 bucket objects private by default and how to grant access permissions?">🪣 S3 Privacy</button>
+        </div>
+
+        <!-- Chat History Window -->
+        <div id="chat-history" class="chat-history">
+          <!-- Welcome Greeting Card -->
+          <div class="chat-message assistant-message welcome-message">
+            <div class="message-header">
+              <span class="agent-avatar">🤖</span>
+              <span class="agent-name">ResolveOps Intelligence</span>
+              <span class="message-time">Ready</span>
+            </div>
+            <div class="message-body">
+              <p>Welcome! I am connected to the <strong>ResolveOps Two-Stage RAG Pipeline</strong>.</p>
+              <p>Ask any technical question across the indexed AWS manuals. Every response is verified through deep cross-encoder reranking and accompanied by page-level citation audit trails.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Jump to Bottom Floating Action Button -->
+        <button id="scroll-bottom-btn" class="scroll-bottom-btn hidden" title="Jump to latest message">
+          <span>↓ Jump to latest</span>
+        </button>
+
+        <!-- Chat Input Form -->
+        <div class="chat-input-container">
+          <form id="chat-form" class="chat-form">
+            <textarea 
+              id="query-input" 
+              placeholder="Ask a technical question... (e.g. How does Lambda retry failed async events?)"
+              rows="1"
+              required
+            ></textarea>
+            <button type="submit" id="send-btn" class="send-button" title="Send Query">
+              <span>Ask</span>
+              <span class="send-arrow">➔</span>
+            </button>
+          </form>
+          <div class="input-hint">
+            <span>Powered by <strong>NVIDIA Nemotron Reranker</strong> &amp; <strong>DeepSeek V3</strong></span>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Right Column: Interactive Citations & Provenance Audit Panel -->
+      <aside class="audit-aside">
+        <div class="aside-header">
+          <h3>Citation &amp; Provenance Audit</h3>
+          <span id="citation-count-badge" class="badge">0 Sources</span>
+        </div>
+
+        <div id="citations-container" class="citations-container">
+          <div class="empty-citations-placeholder">
+            <div class="empty-icon">📑</div>
+            <h4>No Active Citations</h4>
+            <p>Submit a query to inspect the retrieved source documents, page numbers, and section breadcrumbs.</p>
+          </div>
+        </div>
+
+        <!-- Live Latency Telemetry Breakdown -->
+        <div class="telemetry-card">
+          <h4>Execution Latency Profile</h4>
+          <div class="telemetry-metrics">
+            <div class="telemetry-row">
+              <span class="metric-label">Stage 1 (Hybrid Recall):</span>
+              <span id="metric-retrieval" class="metric-value">—</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="metric-label">Stage 2 (Nemotron 8B Rerank):</span>
+              <span id="metric-rerank" class="metric-value">—</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="metric-label">Stage 3 (DeepSeek V3 LLM):</span>
+              <span id="metric-llm" class="metric-value">—</span>
+            </div>
+            <div class="telemetry-row total-row">
+              <span class="metric-label">Total End-to-End:</span>
+              <span id="metric-total" class="metric-value">—</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+    </main>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal-backdrop hidden">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3>Backend &amp; Search Configuration</h3>
+          <button id="close-modal-btn" class="close-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="api-url-input">Backend REST API Endpoint:</label>
+            <input type="text" id="api-url-input" value="http://localhost:8000">
+            <span class="field-hint">Pure decoupled backend server address</span>
+          </div>
+          <div class="form-group">
+            <label for="candidate-pool-slider">Stage 1 Candidate Pool (<span id="candidate-pool-val">10</span> chunks):</label>
+            <input type="range" id="candidate-pool-slider" min="5" max="30" value="10">
+          </div>
+          <div class="form-group">
+            <label for="top-k-slider">Stage 2 Reranked Top-K (<span id="top-k-val">3</span> chunks):</label>
+            <input type="range" id="top-k-slider" min="1" max="10" value="3">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="save-settings-btn" class="primary-btn">Save Settings</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="app.js?v=2"></script>
+</body>
+</html>
+

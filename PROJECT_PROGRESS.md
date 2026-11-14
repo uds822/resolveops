@@ -76,6 +76,26 @@ This file records the project progress in brief form for revision and context. I
 - Authored comprehensive benchmark documentation in `docs/observation.md`.
 - Test suite: all 65 unit tests passing.
 
+### 2026-11-13 — Citation Grounding, Multi-Model LLM Adapter, and End-to-End RAGService
+
+- Implemented `build_grounded_prompt()` and `CitationReference` in `src/resolveops/generation/context_builder.py` ensuring strict anti-hallucination contracts with numbered reference markers (`[1]`, `[2]`).
+- Implemented `LLMClient` adapter interface in `src/resolveops/generation/llm.py` supporting `MockLLMClient`, `OpenRouterLLMClient` (defaulting to DeepSeek V3 `deepseek/deepseek-chat`), and `NVIDIALLMClient`.
+- Implemented `RAGService` orchestrator in `src/resolveops/service.py` unifying: Hybrid Retrieval $\rightarrow$ Cross-Encoder Reranker $\rightarrow$ Grounded Prompt $\rightarrow$ LLM Generation.
+- Structured output model `RAGResponse` provides full provenance citations, latency breakdown (`RAGTimings`), and token accounting.
+- Entire test suite: all 79 unit tests passing (100%).
+- Important files: `src/resolveops/service.py`, `src/resolveops/generation/context_builder.py`, `src/resolveops/generation/llm.py`, `tests/test_service.py`, `tests/test_llm.py`, `tests/test_context_builder.py`.
+
+### 2026-11-13 — Production FastAPI Server and REST API Suite
+
+- Implemented production application factory `create_app()` in `src/resolveops/api/main.py` exposing:
+  - `GET /health` — health probe with live indexed chunk telemetry.
+  - `POST /api/v1/query` — citation-grounded RAG endpoint returning `RAGResponse` with citations and timings.
+  - `POST /api/v1/ingest` — document/text ingestion endpoint updating the hybrid index on the fly.
+- Configured CORS middleware for seamless integration with web and frontend clients.
+- Implemented lazy lifespan management so default models are loaded upon server startup rather than module import.
+- Created `tests/test_api.py` validating the complete HTTP lifecycle (ingest -> health update -> grounded query) with 100% test pass.
+- Important files: `src/resolveops/api/main.py`, `src/resolveops/api/__init__.py`, `tests/test_api.py`.
+
 ## Parser architecture and relationships
 
 The diagram below reflects the actual imports and calls in the parser source. `parse_document()` is the format dispatcher: it selects a parser from the file extension. Each parser builds the shared `Document` model from ordered `Block` objects.
@@ -155,6 +175,23 @@ Input path
                                                 ├─ text, headings, lists, code
                                                 └─ tables (structured rows + text)
 ```
+
+### 2026-11-14 — Persistent Qdrant vector store and 3-way manifest handshake
+
+- Replaced in-memory only vector storage with persistent `QdrantVectorStore` supporting local embedded storage (`data/qdrant_db`) and remote URLs.
+- Implemented isolated sentinel system point (`00000000-0000-0000-0000-000000000000`) storing collection metadata (`generation_id`, `schema_version`) filtered out of search queries and user counts.
+- Built durable BM25 snapshot serialization (`save_snapshot` / `load_snapshot`) with atomic file replacements.
+- Created `IndexManifest` coordinator (`data/index_manifest.json`) enforcing an authoritative 3-way consistency handshake: $\text{manifest.generation\_id} \equiv \text{qdrant.generation\_id} \equiv \text{bm25.generation\_id}$, matching chunk volumes, and SHA-256 BM25 file checksums.
+- Executed production batch ingestion using cloud **NVIDIA Nemotron** embeddings (`nvidia/nemotron-3-embed-1b`, 2048 dimensions) indexing 770 chunks across 10 Markdown files, 5 HTML troubleshooting guides, and 8 core AWS PDF chapters in 126 seconds with verified checkpoints.
+- Important files: `src/resolveops/retrieval/vector_store.py`, `src/resolveops/retrieval/bm25.py`, `src/resolveops/retrieval/manifest.py`, `src/resolveops/retrieval/hybrid.py`, `scripts/ingest_corpus.py`, `tests/test_qdrant.py`, `tests/test_manifest.py`.
+
+### 2026-11-14 — Zero-citation refusal sanitization and UI scroll architecture
+
+- Refined system grounding prompt and citation pipeline to strictly prohibit citation markers (`[1]`, `[2]`) on out-of-scope refusals or missing-information responses.
+- Implemented `is_refusal_answer()` and refusal sanitization in `verify_and_split_citations()`, stripping phantom citation markers and returning 0 citations for out-of-domain queries without triggering validation failures.
+- Re-architected frontend UI layout from CSS Grid to native Flexbox row with `overflow-y: scroll`, eliminating nested scroll traps and enabling smooth scroll tracking across long LLM outputs with a floating "Jump to latest" action.
+- Added comprehensive unit tests in `tests/test_llm.py` validating that out-of-scope questions return zero citations.
+- Important files: `src/resolveops/generation/context_builder.py`, `src/resolveops/generation/llm.py`, `src/resolveops/service.py`, `frontend/styles.css`, `frontend/app.js`, `frontend/index.html`, `tests/test_llm.py`.
 
 ## Adopted Engineering Strategies & Decision Log
 

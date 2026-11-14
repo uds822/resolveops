@@ -1,6 +1,7 @@
 
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -196,6 +197,7 @@ def parse_pdf(
     pdf_path: str | Path,
     page_number: int | None = None,
     *,
+    page_range: tuple[int, int] | Sequence[int] | None = None,
     source_id: str | None = None,
     engine: Literal["pymupdf", "docling"] = "pymupdf",
 ) -> Document:
@@ -203,7 +205,10 @@ def parse_pdf(
         from resolveops.ingestion.docling_pdf_parser import parse_pdf_with_docling
 
         return parse_pdf_with_docling(
-            pdf_path, page_number=page_number, source_id=source_id
+            pdf_path,
+            page_number=page_number,
+            page_range=page_range,
+            source_id=source_id,
         )
     if engine != "pymupdf":
         raise ValueError(f"Unsupported PDF engine: {engine}")
@@ -223,6 +228,23 @@ def parse_pdf(
         if page_number is not None:
             _validate_page_number(page_number, page_count)
             selected_pages = [page_number]
+        elif page_range is not None:
+            if isinstance(page_range, tuple) and len(page_range) == 2:
+                start_p, end_p = page_range
+                _validate_page_number(start_p, page_count)
+                _validate_page_number(end_p, page_count)
+                if start_p > end_p:
+                    raise ValueError(
+                        f"Invalid page_range: start page ({start_p}) cannot be greater than end page ({end_p})"
+                    )
+                selected_pages = list(range(start_p, end_p + 1))
+            else:
+                for p in page_range:
+                    _validate_page_number(p, page_count)
+                selected_pages = list(page_range)
+
+            if not selected_pages:
+                raise ValueError("page_range must contain at least one valid page number")
         else:
             selected_pages = list(range(1, page_count + 1))
 

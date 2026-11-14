@@ -65,22 +65,13 @@ def ingest_document(
 
     try:
         # 1. Parse document
-        if path.suffix.lower() == ".pdf" and pdf_engine == "docling" and page_range is not None:
-            from resolveops.ingestion.docling_pdf_parser import parse_pdf_with_docling
-
-            document: Document = parse_pdf_with_docling(
-                path,
-                page_number=page_number,
-                page_range=page_range,
-                source_id=source_id,
-            )
-        else:
-            document = parse_document(
-                path,
-                page_number=page_number,
-                source_id=source_id,
-                pdf_engine=pdf_engine,
-            )
+        document: Document = parse_document(
+            path,
+            page_number=page_number,
+            page_range=page_range,
+            source_id=source_id,
+            pdf_engine=pdf_engine,
+        )
 
         # 2. Chunk document
         chunks: list[Chunk] = chunk_document(document, max_chars=max_chars)

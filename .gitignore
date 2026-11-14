@@ -31,6 +31,9 @@ dist/
 # Generated extraction and profiling output
 data/profiling/
 graphify-out/
+data/qdrant_db/
+data/bm25_index.json
+data/index_manifest.json
 
 # Large local source PDFs and HTML browser assets
 data/raw/**/*.pdf

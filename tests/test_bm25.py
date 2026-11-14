@@ -60,3 +60,29 @@ def test_bm25_skips_unindexable_quarantined_chunks():
 def test_bm25_empty_index_returns_empty_list():
     index = BM25Index()
     assert index.search("anything") == []
+
+
+def test_bm25_snapshot_roundtrip(tmp_path):
+    """Test saving and loading BM25 index snapshot preserves chunks, scores, and generation ID."""
+    snapshot_path = tmp_path / "bm25_snapshot.json"
+    index = BM25Index(generation_id="gen_initial_001")
+
+    c1 = _make_chunk("c1", "DynamoDB Local version 3.3.2 release notes pom.xml.")
+    c2 = _make_chunk("c2", "Partition key throughput calculation.")
+    index.add_chunks([c1, c2])
+
+    # Save snapshot with a new generation ID
+    index.save_snapshot(snapshot_path, generation_id="gen_20261114_020000")
+    assert snapshot_path.is_file()
+    assert index.get_generation_id() == "gen_20261114_020000"
+
+    # Load snapshot into new index
+    restored = BM25Index.load_snapshot(snapshot_path)
+    assert restored.count() == 2
+    assert restored.get_generation_id() == "gen_20261114_020000"
+
+    # Search restored index
+    results = restored.search("3.3.2 pom.xml", top_k=1)
+    assert len(results) == 1
+    assert results[0].chunk.id == "c1"
+    assert results[0].score > 0.0
