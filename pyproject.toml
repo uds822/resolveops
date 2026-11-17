@@ -24,6 +24,9 @@ dependencies = [
 docling = ["docling==2.145.0", "docling-core==2.105.0"]
 gcp = ["google-cloud-storage>=3.0,<4.0"]
 local = ["sentence-transformers>=2.2"]
+# faster-whisper 1.2.1 passes metadata_errors to av.open (removed in PyAV 19).
+voice = ["faster-whisper>=1.0", "av>=11,<19", "edge-tts>=6.1"]
+voice-kokoro = ["faster-whisper>=1.0", "av>=11,<19", "kokoro>=0.9", "soundfile>=0.12"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

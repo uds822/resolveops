@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ResolveOps — Technical RAG Dashboard</title>
-  <link rel="stylesheet" href="styles.css?v=2">
+  <link rel="stylesheet" href="styles.css?v=6">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -72,20 +72,34 @@
 
         <!-- Chat Input Form -->
         <div class="chat-input-container">
+          <!-- Live Voice Recording / Speaking Status Pill -->
+          <div id="voice-status-bar" class="voice-status-bar hidden">
+            <div class="voice-wave" id="voice-wave">
+              <span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <span id="voice-status-text" class="voice-status-text">Listening... 0:00</span>
+            <button type="button" id="stop-speaking-btn" class="stop-speaking-btn hidden" title="Interrupt Voice Playback">
+              ⏹ Stop Speaking
+            </button>
+          </div>
+
           <form id="chat-form" class="chat-form">
             <textarea 
               id="query-input" 
-              placeholder="Ask a technical question... (e.g. How does Lambda retry failed async events?)"
+              placeholder="Ask a technical question or click the mic to speak... (e.g. How does Lambda retry failed async events?)"
               rows="1"
               required
             ></textarea>
+            <button type="button" id="voice-btn" class="voice-button" title="Speak your question (click to start / stop)">
+              <span class="mic-icon">🎙️</span>
+            </button>
             <button type="submit" id="send-btn" class="send-button" title="Send Query">
               <span>Ask</span>
               <span class="send-arrow">➔</span>
             </button>
           </form>
           <div class="input-hint">
-            <span>Powered by <strong>NVIDIA Nemotron Reranker</strong> &amp; <strong>DeepSeek V3</strong></span>
+            <span>Powered by <strong>NVIDIA Nemotron Reranker</strong>, <strong>DeepSeek V3</strong> &amp; <strong>ResolveOps Voice</strong></span>
           </div>
         </div>
 
@@ -95,7 +109,10 @@
       <aside class="audit-aside">
         <div class="aside-header">
           <h3>Citation &amp; Provenance Audit</h3>
-          <span id="citation-count-badge" class="badge">0 Sources</span>
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <span id="faithfulness-badge" class="badge faithfulness-badge hidden">100% Grounded</span>
+            <span id="citation-count-badge" class="badge">0 Sources</span>
+          </div>
         </div>
 
         <div id="citations-container" class="citations-container">
@@ -110,6 +127,10 @@
         <div class="telemetry-card">
           <h4>Execution Latency Profile</h4>
           <div class="telemetry-metrics">
+            <div id="metric-stt-row" class="telemetry-row hidden">
+              <span class="metric-label">Stage 0 (Whisper STT):</span>
+              <span id="metric-stt" class="metric-value">—</span>
+            </div>
             <div class="telemetry-row">
               <span class="metric-label">Stage 1 (Hybrid Recall):</span>
               <span id="metric-retrieval" class="metric-value">—</span>
@@ -121,6 +142,14 @@
             <div class="telemetry-row">
               <span class="metric-label">Stage 3 (DeepSeek V3 LLM):</span>
               <span id="metric-llm" class="metric-value">—</span>
+            </div>
+            <div class="telemetry-row">
+              <span class="metric-label">Stage 4 (Claim Audit):</span>
+              <span id="metric-audit" class="metric-value">—</span>
+            </div>
+            <div id="metric-tts-row" class="telemetry-row hidden">
+              <span class="metric-label">Stage 5 (Neural TTS):</span>
+              <span id="metric-tts" class="metric-value">—</span>
             </div>
             <div class="telemetry-row total-row">
               <span class="metric-label">Total End-to-End:</span>
@@ -153,6 +182,13 @@
             <label for="top-k-slider">Stage 2 Reranked Top-K (<span id="top-k-val">3</span> chunks):</label>
             <input type="range" id="top-k-slider" min="1" max="10" value="3">
           </div>
+          <div class="form-group checkbox-group">
+            <label class="checkbox-label" for="voice-review-toggle">
+              <input type="checkbox" id="voice-review-toggle">
+              <span>Review voice transcript in input box before sending</span>
+            </label>
+            <span class="field-hint">When enabled, speech is transcribed into the text box so you can fix technical terms before querying</span>
+          </div>
         </div>
         <div class="modal-footer">
           <button id="save-settings-btn" class="primary-btn">Save Settings</button>
@@ -162,7 +198,7 @@
 
   </div>
 
-  <script src="app.js?v=2"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>
 

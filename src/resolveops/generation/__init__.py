@@ -9,6 +9,7 @@ from resolveops.generation.context_builder import (
 )
 from resolveops.generation.llm import (
     GenerationResult,
+    GroqLLMClient,
     LLMClient,
     MockLLMClient,
     NVIDIALLMClient,
@@ -23,6 +24,7 @@ __all__ = [
     "format_single_chunk",
     "build_grounded_prompt",
     "GenerationResult",
+    "GroqLLMClient",
     "LLMClient",
     "NVIDIALLMClient",
     "OpenRouterLLMClient",

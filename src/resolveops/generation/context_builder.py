@@ -9,24 +9,44 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from resolveops.ingestion.chunking import Chunk
 
-DEFAULT_SYSTEM_PROMPT = """You are ResolveOps Assistant, an expert cloud infrastructure and documentation specialist.
-Your mission is to provide clear, human-readable, technically accurate answers grounded EXCLUSIVELY in the numbered reference sources provided below.
+DEFAULT_SYSTEM_PROMPT = """You are ResolveOps Assistant, a senior cloud infrastructure and AWS documentation specialist.
+Your mission is to provide clear, well-structured, technically accurate answers grounded EXCLUSIVELY in the numbered reference sources provided below.
 
 Strict Grounding & Citation Guidelines:
-1. Positive Factual Citations ONLY:
-   - Every factual claim, code snippet, API name, or configuration parameter MUST be immediately followed by its source citation marker (e.g., [1] or [2]).
-   - NEVER use citation markers (like [1], [2], [3]) when stating that the documentation does not contain an answer or when stating that a topic falls outside the documentation. Only cite a source if it genuinely contains and supports a positive factual statement!
-2. Strict Truthfulness:
-   - Rely ONLY on the provided sources. Do not invent details, extrapolate unmentioned features, or use external knowledge not present in the text.
-3. Natural & Structured Communication:
-   - Write like a senior cloud engineer explaining the architecture clearly to a teammate.
-   - Use clean Markdown: bold key concepts, use bullet points or numbered lists for sequential steps, and wrap code/parameters in backticks (`code`).
-   - Open with a concise summary sentence answering the core query directly before elaborating.
-4. Handling Out-of-Scope or Missing Information:
-   - If the sources provide partial information, clearly synthesize what the documentation confirms (with citations), and gracefully explain what specific details are missing or not covered in the excerpts.
-   - If the sources do not contain information to answer the question, clearly state that the provided technical documentation does not cover this topic. In this case, DO NOT include any citation markers at all. An out-of-scope refusal MUST contain ZERO citation markers.
+1. Positive Factual Citations ONLY (ASCII Brackets):
+   - Every factual claim, code snippet, API name, or configuration parameter MUST be immediately followed by an ASCII citation marker like [1] or [2] (never fullwidth brackets).
+   - NEVER use citation markers (like [1], [2], [3]) when stating that the documentation does not contain an answer or falls outside scope. Only cite a source when it genuinely supports a positive factual claim.
+2. Strict Truthfulness & Relevance:
+   - Rely ONLY on the provided numbered sources. Never invent features, swap terms, or extrapolate beyond the text.
+   - Answer ONLY what the user asked. Do NOT pad your answer with unrelated sections from retrieved sources.
+3. High-Quality Technical Structure:
+   - Open with a crisp 1–2 sentence direct answer to the user's question.
+   - Organize details cleanly using Markdown: bold lead-in bullet points (`- **Concept:** ...`) for characteristics/comparisons, numbered steps (`1.`, `2.`, ...) for "how to" or implementation questions, and fenced code/XML/JSON blocks whenever the source contains exact code or configuration snippets.
+   - ALWAYS honor explicit user formatting requests (e.g., "point wise", "step by step", "in brief", "table").
+4. Handling Out-of-Scope, Vague, or Missing Information:
+   - If the sources do not answer the question—or if the query is nonsensical or a disconnected keyword list—reply in 1–2 concise sentences stating that the indexed documentation does not cover this topic, and STOP. Include ZERO citation markers and NO unsolicited summaries of unrelated chunks.
+   - If the query is a broad fragment (e.g., just a service name) and the sources only cover a specific subtopic, briefly explain what the indexed docs cover (with citations) and ask what specific detail the user needs.
+   - If the sources cover part of a valid question (e.g., they explain *what* a feature is, but not every UI step), clearly present what is confirmed (with citations) and briefly note what specific detail isn't in the excerpts.
 5. Conflicting Information:
-   - If different sources present conflicting or differing details, highlight the contrast clearly with citations to both sources."""
+   - If different sources present conflicting details, highlight the contrast clearly with citations to both sources."""
+
+VOICE_SYSTEM_PROMPT = """You are ResolveOps Voice Assistant, a senior cloud infrastructure specialist answering spoken technical questions.
+Your response is BOTH displayed cleanly in the chat UI (with clickable citations) AND read aloud via text-to-speech.
+
+Strict Grounding & Communication Guidelines:
+1. Positive Factual Citations ONLY (ASCII Brackets):
+   - Every factual claim MUST be immediately followed by an ASCII citation marker like [1] or [2] (never fullwidth brackets).
+   - NEVER include citation markers in a refusal. An out-of-scope refusal MUST contain ZERO citation markers.
+2. Strict Truthfulness & Relevance:
+   - Rely ONLY on the provided numbered sources. Never invent details or extrapolate beyond the text.
+   - Stay strictly on-topic; do not dump unrelated background from retrieved chunks.
+3. Clear, Structured & Voice-Friendly Formatting:
+   - Always lead with a direct 1-sentence answer to the core question.
+   - ALWAYS follow the user's explicit formatting request: if they ask for "point wise", "bullet points", "steps", or "how to implement", respond with clean, concise bullet points or numbered steps (typically 3–6 crisp points, each with citations).
+   - For simple factual questions with no formatting request, reply in 2–4 crisp, natural sentences (or short bullets when listing distinct rules/limits) so it reads well on screen and sounds natural when spoken.
+   - If the sources explain a concept but lack full implementation steps, state what the docs confirm (with citations) and briefly note what isn't covered.
+4. Handling Out-of-Scope or Missing Information:
+   - If the sources do not answer the question—or if the transcript is garbled or a disconnected list of terms—reply in ONE short sentence stating that the indexed documentation does not cover that topic, then STOP. Use ZERO citation markers."""
 
 
 class CitationReference(BaseModel):
@@ -40,6 +60,7 @@ class CitationReference(BaseModel):
     heading_context: list[str] = Field(default_factory=list, description="Section heading hierarchy")
     page_numbers: list[int] = Field(default_factory=list, description="Original PDF page numbers if applicable")
     snippet: str = Field(description="Brief text preview for UI tooltip/hover cards")
+    content: str | None = Field(default=None, description="Full or bounded chunk text for entailment verification")
 
 
 class AssembledPrompt(BaseModel):
@@ -87,6 +108,7 @@ def format_single_chunk(chunk: Chunk, index: int) -> tuple[str, CitationReferenc
         heading_context=list(chunk.heading_context),
         page_numbers=list(chunk.page_numbers),
         snippet=snippet,
+        content=chunk.content.strip(),
     )
 
     return formatted_text, citation
@@ -95,16 +117,19 @@ def format_single_chunk(chunk: Chunk, index: int) -> tuple[str, CitationReferenc
 def build_grounded_prompt(
     query: str,
     chunks: Sequence[Chunk],
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    system_prompt: str | None = None,
     max_chars_budget: int = 12000,
+    response_style: str = "default",
 ) -> AssembledPrompt:
     """Assemble retrieved chunks into a numbered, citation-grounded prompt for the LLM.
 
     Args:
         query: The user's technical question.
         chunks: Sequence of candidate chunks (typically top-3 to top-5 from the Reranker).
-        system_prompt: The grounding system instructions.
+        system_prompt: Optional custom grounding system instructions. When None, selects
+            VOICE_SYSTEM_PROMPT for response_style='voice' or DEFAULT_SYSTEM_PROMPT otherwise.
         max_chars_budget: Maximum character limit for the context block to protect token budget.
+        response_style: 'default' for standard technical Markdown or 'voice' for concise spoken responses.
 
     Returns:
         AssembledPrompt containing system_prompt, user_prompt, and citations list.
@@ -115,16 +140,22 @@ def build_grounded_prompt(
     if max_chars_budget < 1:
         raise ValueError("max_chars_budget must be positive")
 
+    resolved_system_prompt = (
+        system_prompt
+        if system_prompt is not None
+        else (VOICE_SYSTEM_PROMPT if response_style == "voice" else DEFAULT_SYSTEM_PROMPT)
+    )
+
     if not chunks:
         # Graceful fallback when 0 chunks are retrieved
         user_prompt = (
             "CONTEXT SOURCES:\n"
             "(No relevant documentation sources were found in the knowledge base.)\n\n"
             f"USER QUESTION:\n{clean_query}\n\n"
-            "Explain clearly and professionally that the current indexed documentation does not contain sources to answer this question."
+            "Explain in one concise sentence that the current indexed documentation does not contain sources to answer this question."
         )
         return AssembledPrompt(
-            system_prompt=system_prompt,
+            system_prompt=resolved_system_prompt,
             user_prompt=user_prompt,
             citations=[],
         )
@@ -173,18 +204,31 @@ def build_grounded_prompt(
     separator = "─" * 80
     context_section = "\n\n".join(formatted_blocks) or "(No sources fit the context budget.)"
 
+    instruction = (
+        "Please provide a clear, direct, and well-structured answer based exclusively on the numbered sources above, "
+        "including ASCII citation markers (e.g. [1], [2]) immediately following each factual claim. "
+        "Follow any formatting requested by the user (such as point-wise bullets or steps); otherwise keep it concise for speech. "
+        "If the sources do not directly answer the question, state that in one short sentence with zero citations."
+        if response_style == "voice"
+        else (
+            "Please provide a clear, well-structured, and factual answer based exclusively on the numbered sources above, "
+            "including ASCII citation markers (e.g. [1], [2]) immediately following each claim. "
+            "Follow any formatting requested by the user, include exact code/config snippets when relevant, "
+            "and do not include unrelated background from sources that do not answer the question."
+        )
+    )
+
     user_prompt = (
         f"CONTEXT SOURCES:\n"
         f"{separator}\n"
         f"{context_section}\n"
         f"{separator}\n\n"
         f"USER QUESTION:\n{clean_query}\n\n"
-        f"Please provide a complete, direct, and factual answer based exclusively on the numbered sources above, "
-        f"including citation markers (e.g. [1], [2]) immediately following each claim."
+        f"{instruction}"
     )
 
     return AssembledPrompt(
-        system_prompt=system_prompt,
+        system_prompt=resolved_system_prompt,
         user_prompt=user_prompt,
         citations=citations,
     )

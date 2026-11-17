@@ -10,6 +10,7 @@ import requests
 from resolveops.generation.context_builder import CitationReference, build_grounded_prompt
 from resolveops.generation.llm import (
     GenerationResult,
+    GroqLLMClient,
     LLMClient,
     MockLLMClient,
     NVIDIALLMClient,
@@ -159,6 +160,30 @@ def test_refusal_sanitizes_citation_markers() -> None:
     assert result.hallucinated_markers == []
 
 
+def test_partial_refusal_with_factual_paragraphs_preserves_citations() -> None:
+    """Mixed answers with a missing-link disclaimer plus cited factual details must NOT strip citations."""
+    chunks = [
+        _make_dummy_chunk("c1", "Concepts.MultiAZ.md", "Multi-AZ DB instance deployments have one standby instance."),
+        _make_dummy_chunk("c2", "object-lock.md", "S3 Object Lock uses a WORM model to prevent deletion."),
+    ]
+    prompt = build_grounded_prompt("RDS Multi-AZ and Object Lock", chunks=chunks)
+
+    mixed_answer = (
+        "The provided technical documentation does not contain information linking RDS Multi-AZ with Object Lock.\n\n"
+        "Multi-AZ deployments for Amazon RDS can be either a Multi-AZ DB instance deployment with one standby "
+        "instance or a Multi-AZ DB cluster deployment with two standby instances [1].\n\n"
+        "S3 Object Lock uses a write-once-read-many (WORM) model to prevent Amazon S3 objects from being deleted [2]."
+    )
+    client = MockLLMClient(default_answer=mixed_answer)
+    result = client.generate(prompt)
+
+    assert "[1]" in result.answer
+    assert "[2]" in result.answer
+    assert len(result.citations) == 2
+    assert result.cited_citations[0].source == "Concepts.MultiAZ.md"
+    assert result.cited_citations[1].source == "object-lock.md"
+
+
 
 def test_make_llm_client_factory() -> None:
     """Test factory creation for mock and nvidia providers."""
@@ -173,8 +198,90 @@ def test_make_llm_client_factory() -> None:
     assert isinstance(openrouter_client, OpenRouterLLMClient)
     assert openrouter_client.model_name == "openai/gpt-4o-mini"
 
+    groq_client = make_llm_client("groq:openai/gpt-oss-120b", api_key="gsk_test_key")
+    assert isinstance(groq_client, GroqLLMClient)
+    assert groq_client.model_name == "openai/gpt-oss-120b"
+
+    groq_default = make_llm_client("groq", api_key="gsk_test_key")
+    assert isinstance(groq_default, GroqLLMClient)
+    assert groq_default.model_name == GroqLLMClient.DEFAULT_MODEL
+
     with pytest.raises(ValueError, match="Unsupported model specification"):
         make_llm_client("anthropic:claude-3-5-sonnet")
+
+
+def test_groq_llm_client_missing_key_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that GroqLLMClient raises ValueError if neither GROQ_API_KEY nor Groq_Api_Key is set."""
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("Groq_Api_Key", raising=False)
+    try:
+        import dotenv
+        monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    except ImportError:
+        pass
+
+    with pytest.raises(ValueError, match="GROQ_API_KEY is required"):
+        GroqLLMClient(api_key=None)
+
+
+def test_groq_llm_client_payload_and_citations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify GroqLLMClient sends reasoning_effort & max_completion_tokens for gpt-oss and extracts citations."""
+    from unittest.mock import MagicMock
+
+    captured: dict = {}
+
+    def fake_post(url, json, headers, timeout):
+        captured["url"] = url
+        captured["payload"] = json
+        captured["headers"] = headers
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "choices": [
+                {"message": {"content": "AWS Lambda retries failed asynchronous invocations twice by default [1]."}}
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125},
+        }
+        return resp
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    chunk = _make_dummy_chunk("c1", "invocation-async.md", "Lambda retries failed async invocations twice.")
+    prompt = build_grounded_prompt("How many times does Lambda retry?", [chunk])
+
+    client = GroqLLMClient(api_key="gsk_test", model_name="openai/gpt-oss-120b")
+    res = client.generate(prompt, max_tokens=380, temperature=0.0)
+
+    assert captured["url"] == GroqLLMClient.DEFAULT_ENDPOINT
+    assert captured["payload"]["model"] == "openai/gpt-oss-120b"
+    assert captured["payload"]["reasoning_effort"] == "low"
+    assert captured["payload"]["max_completion_tokens"] == 2048
+    assert "max_tokens" not in captured["payload"]
+    assert len(res.citations) == 1
+    assert res.citations[0].source == "invocation-async.md"
+    assert res.total_tokens == 125
+
+
+def test_fullwidth_citation_brackets_normalized_to_ascii() -> None:
+    """Models emitting fullwidth 【1】 / 【1, 2】 brackets must normalize cleanly to clickable [1][2] citations."""
+    chunks = [
+        _make_dummy_chunk("c1", "TTL.md", "TTL deletes expired items without consuming write throughput."),
+        _make_dummy_chunk("c2", "TTL.md", "Global Tables replicated deletes consume write capacity in replicas."),
+    ]
+    prompt = build_grounded_prompt("TTL expiry write throughput", chunks=chunks)
+
+    raw_answer = (
+        "The initial TTL delete does not consume write throughput\u202f【1】. "
+        "Replicated deletes in Global Tables consume write capacity in replica regions【1, 2】."
+    )
+    client = MockLLMClient(default_answer=raw_answer)
+    result = client.generate(prompt)
+
+    assert "【" not in result.answer
+    assert "[1]" in result.answer
+    assert "[2]" in result.answer
+    assert len(result.citations) == 2
+    assert result.hallucinated_markers == []
 
 
 def test_openrouter_llm_client_missing_key_validation(monkeypatch: pytest.MonkeyPatch) -> None:

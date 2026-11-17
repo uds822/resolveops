@@ -4,7 +4,7 @@ from resolveops.ingestion.html_parser import parse_html
 
 folder = Path("data/raw/aws/html")
 
-path = next(folder.glob("Troubleshoot access denied*.html"))
+path = folder / "s3-troubleshoot-403.html"
 
 result = parse_html(path)
 

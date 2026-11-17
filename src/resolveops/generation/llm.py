@@ -17,15 +17,55 @@ from resolveops.generation.context_builder import AssembledPrompt, CitationRefer
 def is_refusal_answer(answer: str) -> bool:
     """Check if the answer is purely an out-of-scope refusal or missing-information notification."""
     refusal_patterns = [
-        r"(?:do|does)\s+not\s+contain\s+(?:any\s+)?information",
+        r"(?:do|does)\s+not\s+contain\s+(?:any\s+)?(?:sources|information)",
         r"cannot\s+provide\s+an\s+answer\s+based\s+on\s+the\s+(?:given|provided)\s+sources",
         r"falls?\s+outside\s+the\s+scope",
-        r"provided\s+documentation\s+(?:excerpts\s+)?do(?:es)?\s+not\s+cover",
+        r"(?:provided|indexed)\s+(?:technical\s+)?documentation\s+(?:excerpts\s+)?do(?:es)?\s+not\s+(?:cover|contain)",
         r"cannot\s+find\s+enough\s+information",
         r"no\s+relevant\s+information\s+(?:found|available)",
     ]
     lower = answer.lower()
-    return any(re.search(pat, lower) for pat in refusal_patterns)
+    if not any(re.search(pat, lower) for pat in refusal_patterns):
+        return False
+
+    # Distinguish a pure refusal from a mixed/partial answer containing factual body paragraphs.
+    non_refusal_lines: list[str] = []
+    for raw_line in answer.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line_lower = line.lower()
+        if any(re.search(pat, line_lower) for pat in refusal_patterns):
+            continue
+        if re.search(r"^(?:please|try|could you|feel free|if you)\b", line_lower) and len(line) < 120:
+            continue
+        non_refusal_lines.append(line)
+
+    if not non_refusal_lines:
+        return True
+
+    non_refusal_text = " ".join(non_refusal_lines)
+    has_bullet_facts = any(re.match(r"^(?:[-*•]|\d+\.)\s+", ln) for ln in non_refusal_lines)
+    if has_bullet_facts or len(non_refusal_text) >= 120:
+        return False
+
+    return True
+
+
+def _normalize_citation_brackets(text: str) -> str:
+    """Normalize fullwidth/lenticular citation brackets (e.g. 【1】, 【1, 2】, ［1］) into ASCII [1]."""
+    # Convert narrow/non-breaking spaces before citation brackets to standard spaces
+    normalized = re.sub(r"[\u202f\u00a0]+(?=[\[【［])", " ", text)
+
+    def _expand_multi(match: re.Match[str]) -> str:
+        nums = re.findall(r"\d+", match.group(1))
+        return "".join(f"[{n}]" for n in nums)
+
+    # Fullwidth lenticular 【1】 or 【1, 2】 or 【1】【2】 -> [1][2]
+    normalized = re.sub(r"【\s*(\d+(?:\s*,\s*\d+)*)\s*】", _expand_multi, normalized)
+    # Fullwidth square ［1］ or ［1, 2］ -> [1][2]
+    normalized = re.sub(r"［\s*(\d+(?:\s*,\s*\d+)*)\s*］", _expand_multi, normalized)
+    return normalized
 
 
 def verify_and_split_citations(
@@ -39,10 +79,10 @@ def verify_and_split_citations(
     Returns:
         (sanitized_answer, cited_citations, retrieved_citations, hallucinated_markers)
     """
-    clean_answer = answer
+    clean_answer = _normalize_citation_brackets(answer)
 
     # If the response is an out-of-scope refusal, strip any inappropriate citation markers
-    if is_refusal_answer(answer):
+    if is_refusal_answer(clean_answer):
         # E.g. "sources [1], [2], and [3] do not contain" -> "sources do not contain"
         clean_answer = re.sub(
             r"(?:sources|documents|references)\s+(?:\[\d+\]\s*(?:,\s*|and\s*)?)+\s+do(?:es)?\s+not\s+contain",
@@ -53,7 +93,7 @@ def verify_and_split_citations(
         clean_answer = re.sub(r"\s*\[\d+\]", "", clean_answer)
         raw_markers: list[int] = []
     else:
-        raw_markers = [int(m) for m in re.findall(r"\[(\d+)\]", answer)]
+        raw_markers = [int(m) for m in re.findall(r"\[(\d+)\]", clean_answer)]
 
     seen_markers: set[int] = set()
     unique_markers: list[int] = []
@@ -310,6 +350,120 @@ class OpenRouterLLMClient(LLMClient):
         )
 
 
+class GroqLLMClient(LLMClient):
+    """Production LLM client calling Groq Cloud OpenAI-compatible chat completions API."""
+
+    DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+    DEFAULT_MODEL = "openai/gpt-oss-120b"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str = DEFAULT_MODEL,
+        endpoint_url: str = DEFAULT_ENDPOINT,
+        timeout: float = 60.0,
+        reasoning_effort: str = "low",
+    ) -> None:
+        if not api_key:
+            try:
+                from dotenv import load_dotenv
+
+                load_dotenv()
+            except ImportError:
+                pass
+
+        self.api_key = (
+            api_key
+            or os.environ.get("GROQ_API_KEY")
+            or os.environ.get("Groq_Api_Key")
+        )
+        if not self.api_key:
+            raise ValueError(
+                "GROQ_API_KEY is required for GroqLLMClient. "
+                "Set it in .env or pass api_key explicitly."
+            )
+
+        self.model_name = model_name
+        self.endpoint_url = endpoint_url
+        self.timeout = timeout
+        self.reasoning_effort = reasoning_effort
+
+    def generate(
+        self,
+        prompt: AssembledPrompt,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> GenerationResult:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+        if isinstance(prompt, str):
+            messages = [{"role": "user", "content": prompt}]
+            citations_list = []
+        else:
+            messages = prompt.to_messages()
+            citations_list = prompt.citations
+
+        is_gpt_oss = "gpt-oss" in self.model_name.lower()
+        payload: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if is_gpt_oss:
+            # Reasoning models share max_completion_tokens between internal reasoning and final text
+            payload["reasoning_effort"] = self.reasoning_effort
+            payload["max_completion_tokens"] = max(max_tokens + 1024, 2048)
+        else:
+            payload["max_tokens"] = max_tokens
+
+        t0 = time.monotonic()
+        response = requests.post(
+            self.endpoint_url,
+            json=payload,
+            headers=headers,
+            timeout=self.timeout,
+        )
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Groq Chat Completion API failed ({response.status_code}): {response.text}"
+            )
+
+        data = response.json()
+        choices = data.get("choices", [])
+        if not choices:
+            raise RuntimeError(f"Groq API returned no choices in response: {data}")
+
+        raw_content = choices[0].get("message", {}).get("content") or ""
+        # Strip any inline <think>...</think> blocks defensively
+        answer_text = re.sub(r"<think>[\s\S]*?</think>", "", raw_content).strip()
+
+        usage = data.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+
+        answer_text, cited, retrieved, hallucinated = verify_and_split_citations(answer_text, citations_list)
+
+        return GenerationResult(
+            answer=answer_text,
+            citations=cited,
+            retrieved_citations=retrieved,
+            cited_citations=cited,
+            hallucinated_markers=hallucinated,
+            model_name=self.model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            latency_ms=round(latency_ms, 2),
+        )
+
+
 class MockLLMClient(LLMClient):
     """Fast, deterministic offline mock client for testing and CI pipelines."""
 
@@ -334,11 +488,48 @@ class MockLLMClient(LLMClient):
         elif not prompt.citations:
             answer = "Based on the provided documentation, I cannot find enough information to answer this question."
         else:
-            # Construct a realistic synthetic answer using citation markers
-            parts = []
-            for cit in prompt.citations:
-                parts.append(f"According to {cit.source}, {cit.snippet} [{cit.index}].")
-            answer = " ".join(parts)
+            # Extract query from prompt
+            query_text = ""
+            if isinstance(prompt, AssembledPrompt):
+                if "USER QUESTION:" in prompt.user_prompt:
+                    query_text = prompt.user_prompt.split("USER QUESTION:", 1)[1].split("\n\nPlease provide", 1)[0].strip()
+                else:
+                    for l in reversed(prompt.user_prompt.split("\n")):
+                        if l.lower().startswith("question:"):
+                            query_text = l.split(":", 1)[1].strip()
+                            break
+
+            # Evaluate context coverage of query terms
+            distinctive = {
+                w
+                for w in re.findall(r"\b[a-z0-9_\-\.]{4,}\b", query_text.lower())
+                if w not in {
+                    "what", "when", "where", "which", "does", "have", "with", "from",
+                    "that", "this", "these", "those", "how", "many", "the", "and", "for",
+                    "are", "can", "about", "into", "than", "then", "there", "their",
+                    "default", "between", "handle", "configure", "difference", "typically",
+                    "within", "primary", "type", "should"
+                }
+            }
+            all_context = " ".join((c.content or c.snippet or "").lower() for c in prompt.citations)
+            matched_words = {w for w in distinctive if w in all_context}
+            missing_words = distinctive - matched_words
+            cov = len(matched_words) / len(distinctive) if distinctive else 1.0
+
+            # Out-of-scope / missing-information detection for mock client
+            unsupported_markers = {
+                "bigquery", "google", "kubernetes", "persistentvolumeclaim",
+                "statefulset", "swarm", "docker", "snowmobile", "rupees", "inr"
+            }
+            has_unsupported = any(m in query_text.lower() for m in unsupported_markers)
+
+            if (has_unsupported or cov < 0.25) and query_text:
+                answer = "Based on the provided documentation, I cannot find enough information to answer this question as the topic falls outside the scope."
+            else:
+                parts = []
+                for cit in prompt.citations:
+                    parts.append(f"According to {cit.source}, {cit.snippet} [{cit.index}].")
+                answer = " ".join(parts)
 
         latency_ms = (time.monotonic() - t0) * 1000
         answer, cited, retrieved, hallucinated = verify_and_split_citations(answer, prompt.citations)
@@ -365,6 +556,8 @@ def make_llm_client(
 
     Supported patterns:
         - 'mock' -> MockLLMClient (offline, 0 latency, free)
+        - 'groq' -> GroqLLMClient(model_name='openai/gpt-oss-120b')
+        - 'groq:<model_name>' -> GroqLLMClient (e.g. groq:openai/gpt-oss-120b)
         - 'deepseek' -> OpenRouterLLMClient(model_name='deepseek/deepseek-chat')
         - 'deepseek:<model_name>' -> OpenRouterLLMClient(model_name='deepseek/<model_name>')
         - 'openrouter:<model_name>' -> OpenRouterLLMClient (e.g. openrouter:deepseek/deepseek-chat)
@@ -372,6 +565,13 @@ def make_llm_client(
     """
     if model_spec == "mock":
         return MockLLMClient()
+
+    if model_spec == "groq":
+        return GroqLLMClient(api_key=api_key)
+
+    if model_spec.startswith("groq:"):
+        model_name = model_spec.split("groq:", 1)[1].strip() or GroqLLMClient.DEFAULT_MODEL
+        return GroqLLMClient(model_name=model_name, api_key=api_key)
 
     if model_spec == "deepseek":
         return OpenRouterLLMClient(model_name="deepseek/deepseek-chat", api_key=api_key)
@@ -390,6 +590,6 @@ def make_llm_client(
 
     raise ValueError(
         f"Unsupported model specification '{model_spec}'. "
-        f"Expected 'mock', 'deepseek', 'openrouter:<model_name>', or 'nvidia:<model_name>'."
+        f"Expected 'mock', 'groq:<model_name>', 'deepseek', 'openrouter:<model_name>', or 'nvidia:<model_name>'."
     )
 

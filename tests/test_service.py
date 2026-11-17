@@ -164,6 +164,33 @@ def test_rag_service_empty_query_raises_value_error() -> None:
         service.answer_query("   ")
 
 
+def test_rag_service_min_rerank_score_filters_irrelevant_chunks() -> None:
+    """Chunks scoring below min_rerank_score must be dropped so irrelevant context is not fed to the LLM."""
+    embedder = MockEmbeddingModel()
+    vector_store = InMemoryVectorStore(embedder)
+    bm25 = BM25Index()
+    retriever = HybridRetriever(vector_store, bm25, rrf_k=60)
+    retriever.add_chunks([
+        _make_dummy_chunk(
+            chunk_id="chunk_s3",
+            source="s3-userguide.pdf",
+            content="By default, all Amazon S3 buckets are private.",
+        ),
+    ])
+
+    # Unrelated query gets MockReranker score sigmoid(-2.0) ~= 0.119, which falls below 0.5
+    service = RAGService(
+        retriever=retriever,
+        reranker=MockReranker(),
+        llm_client=MockLLMClient(),
+        min_rerank_score=0.5,
+    )
+    response = service.answer_query("What is Lambda to Tree?")
+    assert response.reranked_count == 0
+    assert response.citations == []
+    assert "cannot find enough information" in response.answer
+
+
 def test_rag_service_live_deepseek_generation() -> None:
     """Live test calling OpenRouter DeepSeek V3 in end-to-end pipeline (skipped in offline sandbox)."""
     try:

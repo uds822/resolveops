@@ -29,6 +29,31 @@ class EmbeddingModel(ABC):
         ...
 
 
+class MockEmbeddingModel(EmbeddingModel):
+    """Deterministic pseudo-embeddings for testing, offline benchmarking, and CI."""
+
+    model_name: str = "mock"
+
+    def __init__(self, dimension: int = 384) -> None:
+        self.dimension = dimension
+
+    def _embed_text(self, text: str) -> list[float]:
+        import hashlib
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        raw = [float(b) / 255.0 for b in digest]
+        while len(raw) < self.dimension:
+            raw.extend(raw)
+        vec = raw[: self.dimension]
+        norm = sum(x * x for x in vec) ** 0.5 or 1.0
+        return [x / norm for x in vec]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed_text(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed_text(text)
+
+
 class LocalEmbeddingModel(EmbeddingModel):
     """Runs embedding models locally using sentence-transformers.
 
@@ -153,6 +178,9 @@ def make_embedding_model(model_name: str | None = None) -> EmbeddingModel:
                 if os.environ.get("NVIDIA_API_KEY")
                 else "all-MiniLM-L6-v2"
             )
+
+    if model_name.lower() in ("mock", "dummy"):
+        return MockEmbeddingModel()
 
     if model_name.startswith("nvidia:"):
         actual_model = model_name.removeprefix("nvidia:") or "nvidia/nemotron-3.5-embed-1b"

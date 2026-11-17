@@ -208,3 +208,12 @@ def test_oversized_table_is_skipped_without_losing_later_sources() -> None:
     assert [citation.chunk_id for citation in result.citations] == ["text"]
     assert "[1] Source: doc.md" in result.user_prompt
 
+
+def test_build_grounded_prompt_voice_style_uses_concise_prompt() -> None:
+    from resolveops.generation.context_builder import VOICE_SYSTEM_PROMPT
+
+    chunk = _make_dummy_chunk("c1", "invocation-async.md", "Lambda retries failed async invocations twice.")
+    assembled = build_grounded_prompt("What is Lambda retries?", [chunk], response_style="voice")
+    assert assembled.system_prompt == VOICE_SYSTEM_PROMPT
+    assert "point-wise bullets or steps" in assembled.user_prompt
+

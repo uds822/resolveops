@@ -46,8 +46,9 @@ flowchart TD
     subgraph Generation ["4. Grounding & Generation"]
         TopK --> Builder["Grounded Context Builder<br/>• Numbered Citations and Provenance<br/>• Anti-Hallucination Contract"]
         Builder --> LLM["DeepSeek-V3 / Llama 3.2 90B"]
-        LLM --> Sanitizer["Citation Audit & Refusal Sanitizer"]
-        Sanitizer --> Response["Verified Answer with Provenance"]
+        LLM --> Sanitizer["Tier 1 Citation Audit & Refusal Sanitizer"]
+        Sanitizer --> Verifier["Tier 2 Semantic Claim Verifier<br/>Strategy A: Single Batch Audit"]
+        Verifier --> Response["Verified Answer with Faithfulness Score"]
     end
 
     subgraph Serving ["5. Delivery & UI"]
@@ -90,17 +91,35 @@ as well as chunk volume equality and SHA-256 BM25 checksums to prevent cross-sto
 ### 4. Citation Grounding, Provenance Auditing & Refusal Safeguards
 - **Strict Grounding Contract**: Every factual claim, code snippet, and configuration parameter is tethered to a numbered citation marker (`[1]`, `[2]`).
 - **Refusal Sanitization**: If a question is out-of-scope or unanswerable, the system explicitly refuses without phantom citations (`Citations: 0`), preventing false citation illusions.
-- **Automated Hallucination Detection**: The post-generation pipeline audits markers against retrieved context and detects ungrounded claims (`hallucinated_markers`).
+- **Automated Hallucination Detection (Tier 1)**: The post-generation pipeline audits markers against retrieved context and detects ungrounded index references (`hallucinated_markers`).
 - **Pluggable LLM Adapters**: Native support for **DeepSeek-V3** (`openrouter:deepseek/deepseek-chat`) and **NVIDIA Llama-3.2-90B**, with an offline deterministic `MockLLMClient` for fast CI testing.
+
+### 5. Semantic Claim Verification & Faithfulness Scoring (Tier 2 — Strategy A Batch Audit)
+- **Eliminating Citation Misattribution**: Prevents the critical failure mode where an LLM cites a valid source file, but attributes a fabricated or exaggerated fact to it (e.g. claiming a 50 MB item limit citing an error code guide).
+- **Atomic Claim Extraction**: Deconstructs generated answers into individual sentences carrying citations, safely handling complex technical identifiers, dotted versions (`3.3.2`), and code paths (`pom.xml`).
+- **Strategy A (Single-Call Batch Verification)**: Batches all claims into **one single LLM judge call** at `temperature=0.0`, eliminating latency multiplication and capping audit overhead to ~500–700 ms.
+- **Quantitative Faithfulness Score**: Formulates an objective ratio:
+
+```math
+\text{Faithfulness Score} = \frac{\text{Supported Claims}}{\text{Total Cited Claims}} \quad (0.0 \text{ to } 1.0)
+```
+
+- **Interactive Verification Demo**: Includes `scripts/verify_grounding_demo.py` to immediately test both 100% grounded answers and caught misattributions with evidence quotes and explanations.
 
 > [!NOTE]
 > **Engineering Integrity Note on Hallucinations:**
-> No generative LLM can mathematically guarantee a 0% hallucination rate. ResolveOps is engineered to shift from blind trust to **verifiable provenance**: enforcing strict anti-hallucination grounding prompts, validating citation markers against retrieved context, stripping phantom citations on out-of-scope refusals, and isolating corrupted extractions behind quality gates.
+> No generative LLM can mathematically guarantee a 0% hallucination rate. ResolveOps is engineered to shift from blind trust to **verifiable provenance**: enforcing strict anti-hallucination grounding prompts, validating citation markers against retrieved context, running semantic claim entailment audits, stripping phantom citations on out-of-scope refusals, and isolating corrupted extractions behind quality gates.
 
-### 5. ResolveOps Studio UI
+### 6. ResolveOps Studio UI
 - Native **Flexbox layout** with independent, smooth scrolling containers.
 - **Interactive Citation & Provenance Audit Panel**: Clicking any citation chip (`[1]`, `[2]`) in the chat highlights the exact source document, section breadcrumb hierarchy, and PDF page numbers in the sidebar.
-- **Live Telemetry Waterfall**: Real-time breakdown of `Retrieval Latency (ms)`, `Rerank Latency (ms)`, and `Generation Latency (ms)`.
+- **Dynamic Grounding Badges**: Header dynamically displays `✅ 100% Grounded` in emerald or `⚠️ X Unsupported Claims` in amber, with hover tooltips detailing the exact sentence and explanation.
+- **Live Telemetry Waterfall**: Real-time latency breakdown across all pipeline stages:
+  - `Stage 1 (Hybrid Recall)`
+  - `Stage 2 (Nemotron 8B Rerank)`
+  - `Stage 3 (DeepSeek V3 LLM)`
+  - `Stage 4 (Claim Audit)`
+  - `Total End-to-End Latency`
 
 ---
 
@@ -194,11 +213,18 @@ pytest
 # Run retrieval & storage tests
 pytest tests/test_qdrant.py tests/test_manifest.py tests/test_hybrid.py -v
 
-# Run generation & citation tests
-pytest tests/test_context_builder.py tests/test_llm.py tests/test_service.py -v
+# Run generation, citation & semantic grounding tests
+pytest tests/test_context_builder.py tests/test_llm.py tests/test_grounding_verifier.py tests/test_service.py -v
 
-# Run API lifecycle integration tests
-pytest tests/test_api.py -v
+# Run RAGAS evaluator tests
+pytest tests/test_ragas_evaluator.py -v
+
+# Run RAGAS 20-item offline benchmark (smoke or full)
+python scripts/eval_ragas.py --mock --smoke
+python scripts/eval_ragas.py --mock
+
+# Run interactive claim grounding CLI demo
+python scripts/verify_grounding_demo.py
 ```
 
 ---
@@ -209,24 +235,32 @@ pytest tests/test_api.py -v
 resolveops/
 ├── data/
 │   ├── raw/aws/             # Raw AWS PDF manuals, HTML guides, and Markdown
+│   ├── eval_golden_set.json # 20-item curated golden evaluation dataset
 │   ├── qdrant_db/           # Persistent local Qdrant collection (ignored in git)
 │   ├── bm25_index.json      # Durable BM25 snapshot (ignored in git)
 │   └── index_manifest.json  # 3-Way consistency manifest (ignored in git)
+├── docs/
+│   ├── claim_grounding_plan.md      # Grounding & citation entailment architecture
+│   ├── raga.md                      # RAGAS offline evaluation methodology & specification
+│   ├── ragas_benchmark_report.md    # Automated quality release gate audit report
+│   └── production-scale-roadmap.md  # 12-week roadmap (Agentic RAG, Voice, Scale)
 ├── frontend/                # ResolveOps RAG Studio (Decoupled Web Client)
-│   ├── index.html           # Modern dark-theme workspace
+│   ├── index.html           # Modern dark-theme workspace with grounding badges
 │   ├── styles.css           # Custom sleek scrollbars, flexbox layout, animations
 │   └── app.js               # Reactive state manager, citation highlighter, telemetry
 ├── scripts/
+│   ├── eval_ragas.py        # RAGAS offline benchmark runner with release gates
 │   ├── ingest_corpus.py     # Production batch ingestion orchestrator
+│   ├── verify_grounding_demo.py     # Interactive claim entailment verification demo
 │   ├── demo_rerank.py       # Empirical 2-stage retrieval demonstration
-│   └── benchmark_with_reranker.py # Benchmark suite for reranking precision
+│   └── benchmark_with_reranker.py   # Benchmark suite for reranking precision
 ├── src/resolveops/
-│   ├── ingestion/           # Layout-aware parsers, Docling adapter, chunking
+│   ├── evals/               # RAGAS evaluator models, metrics & report generator
 │   ├── retrieval/           # Persistent Qdrant, BM25, Hybrid RRF, Cross-Encoder
-│   ├── generation/          # Grounded prompts, LLM adapters, refusal sanitizers
-│   ├── service.py           # End-to-end RAG orchestrator facade
+│   ├── generation/          # Grounded prompts, LLM adapters, grounding_verifier.py
+│   ├── service.py           # End-to-end RAG orchestrator facade (Stages 1-5)
 │   └── api/                 # Production FastAPI server & static file mount
-└── tests/                   # 100% passing automated test suite
+└── tests/                   # 100% passing automated test suite (including test_grounding_verifier.py)
 ```
 
 ---

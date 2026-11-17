@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,16 @@ from resolveops.retrieval.manifest import InconsistentIndexError, generate_gener
 from resolveops.retrieval.reranker import make_reranker
 from resolveops.retrieval.vector_store import InMemoryVectorStore, QdrantVectorStore
 from resolveops.service import RAGResponse, RAGService
+from resolveops.voice import (
+    EmptySpeechError,
+    STTResult,
+    VoicePipeline,
+    VoiceQueryResponse,
+    make_stt_adapter,
+    make_tts_adapter,
+)
+
+MAX_VOICE_AUDIO_BYTES = 10 * 1024 * 1024  # 10 MB upload cap for voice recordings
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -137,6 +148,13 @@ def preload_sample_corpus(retriever: HybridRetriever) -> int:
 
 def build_default_rag_service() -> tuple[RAGService, HybridRetriever]:
     """Assemble default production RAG service dependencies with strict configuration validation."""
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(override=False)
+    except ImportError:
+        pass
+
     embed_spec = os.environ.get("RESOLVEOPS_EMBED_MODEL")
     if not embed_spec:
         embed_spec = "nvidia:nvidia/nemotron-3-embed-1b" if os.environ.get("NVIDIA_API_KEY") else "all-MiniLM-L6-v2"
@@ -174,14 +192,16 @@ def build_default_rag_service() -> tuple[RAGService, HybridRetriever]:
 
     llm_spec = os.environ.get("RESOLVEOPS_LLM_MODEL")
     if not llm_spec:
-        if os.environ.get("OPENROUTER_API_KEY"):
+        if os.environ.get("GROQ_API_KEY") or os.environ.get("Groq_Api_Key"):
+            llm_spec = "groq:openai/gpt-oss-120b"
+        elif os.environ.get("OPENROUTER_API_KEY"):
             llm_spec = "openrouter:deepseek/deepseek-chat"
         elif os.environ.get("NVIDIA_API_KEY"):
             llm_spec = "nvidia:meta/llama-3.2-90b-vision-instruct"
         else:
             raise RuntimeError(
                 "No generative LLM configuration or provider API keys found. "
-                "Set OPENROUTER_API_KEY, NVIDIA_API_KEY, or explicitly set "
+                "Set GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, or explicitly set "
                 "RESOLVEOPS_LLM_MODEL=mock to run in offline testing mode."
             )
 
@@ -196,12 +216,46 @@ def build_default_rag_service() -> tuple[RAGService, HybridRetriever]:
                 f"Set RESOLVEOPS_LLM_MODEL=mock to explicitly run in mock mode."
             ) from exc
 
+    enable_audit = os.environ.get("RESOLVEOPS_ENABLE_CLAIM_AUDIT", "true").lower() in ("true", "1", "yes")
+    verifier = None
+    if enable_audit:
+        if isinstance(llm_client, MockLLMClient):
+            from resolveops.generation.grounding_verifier import MockGroundingVerifier
+
+            verifier = MockGroundingVerifier()
+        else:
+            from resolveops.generation.grounding_verifier import LLMGroundingVerifier
+
+            verifier = LLMGroundingVerifier(llm_client=llm_client)
+
+    min_rerank_env = os.environ.get("RESOLVEOPS_MIN_RERANK_SCORE")
+    min_rerank_score = float(min_rerank_env) if (min_rerank_env is not None and min_rerank_env.strip()) else 0.0
+
     service = RAGService(
         retriever=retriever,
         reranker=reranker,
         llm_client=llm_client,
+        grounding_verifier=verifier,
+        min_rerank_score=min_rerank_score,
     )
     return service, retriever
+
+
+def build_default_voice_pipeline(service: RAGService) -> VoicePipeline:
+    """Assemble default STT + natural TTS VoicePipeline wrapping the active RAGService."""
+    is_mock_llm = isinstance(service.llm_client, MockLLMClient)
+
+    stt_spec = os.environ.get("RESOLVEOPS_STT_MODEL")
+    if not stt_spec:
+        stt_spec = "mock" if is_mock_llm else "whisper:small"
+    stt = make_stt_adapter(stt_spec)
+
+    tts_spec = os.environ.get("RESOLVEOPS_TTS_MODEL")
+    if not tts_spec and is_mock_llm:
+        tts_spec = "mock"
+    tts = make_tts_adapter(tts_spec)
+
+    return VoicePipeline(rag_service=service, stt=stt, tts=tts)
 
 
 @asynccontextmanager
@@ -211,6 +265,12 @@ async def lifespan(app: FastAPI):
         default_service, default_retriever = build_default_rag_service()
         app.state.rag_service = default_service
         app.state.retriever = default_retriever
+        app.state.voice_pipeline = build_default_voice_pipeline(default_service)
+        print(
+            f"✅ [ResolveOps Startup] LLM={getattr(default_service.llm_client, 'model_name', 'unknown')} "
+            f"| STT={app.state.voice_pipeline.stt.model_name} "
+            f"| TTS={getattr(app.state.voice_pipeline.tts, 'model_name', 'none')}"
+        )
 
         # Automatically index sample docs on server startup if currently empty
         if default_retriever.count() == 0:
@@ -230,6 +290,7 @@ async def lifespan(app: FastAPI):
 def create_app(
     rag_service: RAGService | None = None,
     retriever: HybridRetriever | None = None,
+    voice_pipeline: VoicePipeline | None = None,
 ) -> FastAPI:
     """FastAPI Application Factory for production and test environments."""
 
@@ -260,6 +321,12 @@ def create_app(
     # Attach injected dependencies immediately if provided
     app.state.rag_service = rag_service
     app.state.retriever = retriever
+    if voice_pipeline is not None:
+        app.state.voice_pipeline = voice_pipeline
+    elif rag_service is not None:
+        app.state.voice_pipeline = build_default_voice_pipeline(rag_service)
+    else:
+        app.state.voice_pipeline = None
 
     def persist_mutation(retriever_inst: HybridRetriever) -> None:
         if isinstance(retriever_inst.vector_store, QdrantVectorStore):
@@ -277,8 +344,11 @@ def create_app(
     def health_check() -> dict[str, Any]:
         retriever_inst: HybridRetriever = app.state.retriever
         service_inst: RAGService | None = getattr(app.state, "rag_service", None)
+        voice_inst: VoicePipeline | None = getattr(app.state, "voice_pipeline", None)
         is_mock_llm = isinstance(service_inst.llm_client, MockLLMClient) if service_inst else True
         llm_model = getattr(service_inst.llm_client, "model_name", "unknown") if service_inst else "unknown"
+        stt_model = getattr(voice_inst.stt, "model_name", None) if voice_inst else None
+        tts_model = getattr(voice_inst.tts, "model_name", None) if (voice_inst and voice_inst.tts) else None
 
         return {
             "status": "healthy",
@@ -289,6 +359,9 @@ def create_app(
                 "retriever": "ready" if retriever_inst else "uninitialized",
                 "llm_model": llm_model,
                 "is_mock_llm": is_mock_llm,
+                "voice_ready": voice_inst is not None,
+                "stt_model": stt_model,
+                "tts_model": tts_model,
             },
         }
 
@@ -315,6 +388,140 @@ def create_app(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"RAG query pipeline execution failed: {str(exc)}",
             ) from exc
+
+    async def _read_voice_upload(request: Request, x_audio_filename: str | None) -> tuple[bytes, str]:
+        """Read uploaded voice audio with a strict 10 MB memory cap and derive a safe filename."""
+        chunks: list[bytes] = []
+        total_bytes = 0
+        async for chunk in request.stream():
+            total_bytes += len(chunk)
+            if total_bytes > MAX_VOICE_AUDIO_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail="Audio upload exceeds maximum allowed size of 10 MB.",
+                )
+            chunks.append(chunk)
+        audio_bytes = b"".join(chunks)
+
+        if not audio_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Audio request body cannot be empty.",
+            )
+
+        content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+        mime_to_ext = {
+            "audio/wav": ".wav",
+            "audio/wave": ".wav",
+            "audio/x-wav": ".wav",
+            "audio/webm": ".webm",
+            "audio/mpeg": ".mp3",
+            "audio/mp3": ".mp3",
+            "audio/mp4": ".mp4",
+            "audio/ogg": ".ogg",
+        }
+        filename = x_audio_filename or f"recording{mime_to_ext.get(content_type, '.webm')}"
+        return audio_bytes, filename
+
+    # ── Voice Transcribe Endpoint (STT Only for Review/Edit Mode) ────────────
+    @app.post("/api/v1/voice/transcribe", response_model=STTResult, tags=["Voice"])
+    async def voice_transcribe_endpoint(
+        request: Request,
+        x_audio_filename: str | None = Header(default=None),
+    ) -> STTResult:
+        voice_inst: VoicePipeline | None = getattr(app.state, "voice_pipeline", None)
+        if voice_inst is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Voice pipeline is not initialized.",
+            )
+
+        audio_bytes, filename = await _read_voice_upload(request, x_audio_filename)
+        try:
+            return await run_in_threadpool(
+                voice_inst.transcribe_audio,
+                audio_bytes=audio_bytes,
+                filename=filename,
+            )
+        except EmptySpeechError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Voice engine dependency not installed: {str(exc)}",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Voice transcription failed: {str(exc)}",
+            ) from exc
+
+    # ── Voice Query Endpoint (STT -> RAG -> Natural TTS) ─────────────────────
+    @app.post("/api/v1/voice/query", response_model=VoiceQueryResponse, tags=["Voice"])
+    async def voice_query_endpoint(
+        request: Request,
+        candidate_pool: int = Query(default=10, ge=1, le=50),
+        top_k: int = Query(default=3, ge=1, le=10),
+        temperature: float = Query(default=0.0, ge=0.0, le=1.0),
+        x_audio_filename: str | None = Header(default=None),
+    ) -> VoiceQueryResponse:
+        voice_inst: VoicePipeline | None = getattr(app.state, "voice_pipeline", None)
+        if voice_inst is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Voice pipeline is not initialized.",
+            )
+
+        audio_bytes, filename = await _read_voice_upload(request, x_audio_filename)
+
+        try:
+            return await run_in_threadpool(
+                voice_inst.process_audio,
+                audio_bytes=audio_bytes,
+                filename=filename,
+                candidate_pool=candidate_pool,
+                top_k=top_k,
+                temperature=temperature,
+            )
+        except EmptySpeechError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Voice engine dependency not installed: {str(exc)}",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Voice pipeline execution failed: {str(exc)}",
+            ) from exc
+
+    # ── Voice Audio Playback Endpoint ────────────────────────────────────────
+    @app.get("/api/v1/voice/audio/{audio_id}", tags=["Voice"])
+    def voice_audio_endpoint(audio_id: str) -> Response:
+        voice_inst: VoicePipeline | None = getattr(app.state, "voice_pipeline", None)
+        if voice_inst is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Voice pipeline is not initialized.",
+            )
+        stored = voice_inst.get_audio(audio_id)
+        if stored is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Audio clip not found or expired from cache.",
+            )
+        return Response(
+            content=stored.audio_bytes,
+            media_type=stored.media_type,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
 
     # ── Ingest Text Endpoint ─────────────────────────────────────────────────
     @app.post("/api/v1/ingest", tags=["Ingestion"], dependencies=[Depends(require_ingestion_key)])

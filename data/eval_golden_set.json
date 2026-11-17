@@ -1,0 +1,315 @@
+[
+  {
+    "example_id": "eval_lambda_001",
+    "question": "How many times does AWS Lambda retry a failed asynchronous invocation by default?",
+    "reference_answer": "By default, AWS Lambda retries a failed asynchronous invocation twice, with delays between retries.",
+    "essential_facts": [
+      "Lambda retries asynchronous invocations twice by default",
+      "There are delays between retry attempts"
+    ],
+    "expected_evidence": {
+      "source": "invocation-async.md",
+      "excerpt": "When an asynchronous function fails, Lambda retries the invocation twice by default, with delays between attempts."
+    },
+    "category": "direct_factual",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_dynamo_002",
+    "question": "Does deleting expired items via DynamoDB Time to Live (TTL) consume write throughput?",
+    "reference_answer": "No, DynamoDB deletes expired items automatically without consuming write throughput for your table.",
+    "essential_facts": [
+      "TTL deletes items without consuming provisioned write throughput",
+      "Deletion happens automatically based on the TTL timestamp"
+    ],
+    "expected_evidence": {
+      "source": "TTL.md",
+      "excerpt": "Time to Live (TTL) for DynamoDB is a cost-effective method for deleting items that are no longer relevant, without consuming write throughput."
+    },
+    "category": "direct_factual",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_dynamo_003",
+    "question": "What causes an ItemCollectionSizeLimitExceededException in Amazon DynamoDB?",
+    "reference_answer": "An ItemCollectionSizeLimitExceededException occurs when an item collection for a table with a local secondary index exceeds 10 GB in size.",
+    "essential_facts": [
+      "Applies to tables with local secondary indexes (LSIs)",
+      "Occurs when an item collection exceeds the 10 GB size limit"
+    ],
+    "expected_evidence": {
+      "source": "Programming.Errors.md",
+      "excerpt": "An ItemCollectionSizeLimitExceededException occurs when an item collection exceeds the maximum allowed size of 10 GB."
+    },
+    "category": "tables_limits",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_iam_004",
+    "question": "What type of security credentials does an IAM role provide to an application or user?",
+    "reference_answer": "An IAM role provides temporary security credentials rather than long-term credentials like passwords or access keys.",
+    "essential_facts": [
+      "IAM roles provide temporary security credentials",
+      "Roles do not use long-term static credentials"
+    ],
+    "expected_evidence": {
+      "source": "id_roles.md",
+      "excerpt": "An IAM role is an IAM identity that you can create in your account that has specific permissions. An IAM role provides temporary security credentials."
+    },
+    "category": "direct_factual",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_s3_005",
+    "question": "What is the primary function of S3 Versioning in Amazon S3?",
+    "reference_answer": "S3 Versioning allows you to preserve, retrieve, and restore every version of every object stored in an S3 bucket, protecting against accidental overwrites and deletes.",
+    "essential_facts": [
+      "Preserves, retrieves, and restores every version of objects",
+      "Protects against unintended user actions and application failures"
+    ],
+    "expected_evidence": {
+      "source": "Versioning.md",
+      "excerpt": "Versioning in Amazon S3 is a means of keeping multiple variants of an object in the same bucket."
+    },
+    "category": "direct_factual",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_rds_006",
+    "question": "What is the primary purpose of an Amazon RDS Multi-AZ deployment?",
+    "reference_answer": "Amazon RDS Multi-AZ deployments provide high availability and automatic failover support for DB instances by maintaining a synchronous standby replica in a different Availability Zone.",
+    "essential_facts": [
+      "Provides high availability and failover support",
+      "Maintains a synchronous standby replica in a second Availability Zone"
+    ],
+    "expected_evidence": {
+      "source": "Concepts.MultiAZ.md",
+      "excerpt": "Amazon RDS Multi-AZ deployments provide enhanced availability and durability for DB instances, making them a natural fit for production database workloads."
+    },
+    "category": "direct_factual",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_s3_007",
+    "question": "What are the two retention modes supported by Amazon S3 Object Lock?",
+    "reference_answer": "Amazon S3 Object Lock supports two retention modes: Governance mode and Compliance mode.",
+    "essential_facts": [
+      "Supports Governance mode",
+      "Supports Compliance mode"
+    ],
+    "expected_evidence": {
+      "source": "object-lock.md",
+      "excerpt": "S3 Object Lock provides two retention modes that apply different levels of protection to your objects: Governance mode and Compliance mode."
+    },
+    "category": "direct_factual",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_iam_008",
+    "question": "What happens if a user signs in without providing MFA when MFA is enforced?",
+    "reference_answer": "If MFA is required by policy, access to protected AWS resources or API actions is denied until the user authenticates with an approved MFA code.",
+    "essential_facts": [
+      "Access to protected resources is denied without valid MFA verification"
+    ],
+    "expected_evidence": {
+      "source": "id_credentials_mfa.md",
+      "excerpt": "When you require multi-factor authentication (MFA), users must provide a code from an approved MFA device to authenticate."
+    },
+    "category": "troubleshooting",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_dynamo_009",
+    "question": "How should an application handle a TransactionConflictException in DynamoDB?",
+    "reference_answer": "The application should catch the TransactionConflictException and retry the transaction using exponential backoff.",
+    "essential_facts": [
+      "TransactionConflictException indicates concurrent conflicting transactions",
+      "Application should retry the transaction with backoff"
+    ],
+    "expected_evidence": {
+      "source": "Programming.Errors.md",
+      "excerpt": "TransactionConflictExceptions occur when another transaction is concurrently updating the same item. Applications should retry with exponential backoff."
+    },
+    "category": "troubleshooting",
+    "answerability": "answerable",
+    "split": "held_out"
+  },
+  {
+    "example_id": "eval_s3_010",
+    "question": "In S3 Object Lock Compliance mode, can the root user or AWS account owner delete protected object versions before the retention period expires?",
+    "reference_answer": "No, in Compliance mode, protected object versions cannot be overwritten or deleted by any user, including the root user in your AWS account.",
+    "essential_facts": [
+      "Cannot be deleted by any user, including the root account",
+      "Retention period cannot be shortened in Compliance mode"
+    ],
+    "expected_evidence": {
+      "source": "object-lock.md",
+      "excerpt": "In Compliance mode, a protected object version can't be overwritten or deleted by any user, including the root user in your AWS account."
+    },
+    "category": "tables_limits",
+    "answerability": "answerable",
+    "split": "held_out"
+  },
+  {
+    "example_id": "eval_iam_011",
+    "question": "What is the difference between an IAM user and an IAM role?",
+    "reference_answer": "An IAM user represents a specific person or service with long-term credentials, while an IAM role is an identity that can be assumed by anyone who needs it and provides temporary credentials.",
+    "essential_facts": [
+      "IAM user has permanent long-term credentials (password, access keys)",
+      "IAM role has no long-term credentials and provides temporary credentials via assumption"
+    ],
+    "expected_evidence": {
+      "source": "id_roles.md",
+      "excerpt": "An IAM user has permanent long-term credentials, while an IAM role provides temporary security credentials."
+    },
+    "category": "terminology",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_lambda_012",
+    "question": "Where does AWS Lambda send failed asynchronous events after all retry attempts are exhausted?",
+    "reference_answer": "Lambda can send failed event payloads to a dead-letter queue (DLQ) using Amazon SQS or Amazon SNS, or to an on-failure destination.",
+    "essential_facts": [
+      "Sends failed events to a dead-letter queue (SQS/SNS) or destination"
+    ],
+    "expected_evidence": {
+      "source": "invocation-async.md",
+      "excerpt": "You can configure Lambda to send event records to an on-failure destination, or configure a dead-letter queue (DLQ) using Amazon SQS or Amazon SNS."
+    },
+    "category": "troubleshooting",
+    "answerability": "answerable",
+    "split": "held_out"
+  },
+  {
+    "example_id": "eval_dynamo_013",
+    "question": "Within what time frame does DynamoDB typically delete items marked as expired by TTL?",
+    "reference_answer": "DynamoDB typically deletes expired items within 48 hours of expiration, depending on table activity and system workload.",
+    "essential_facts": [
+      "Items are typically deleted within 48 hours of their expiration timestamp"
+    ],
+    "expected_evidence": {
+      "source": "TTL.md",
+      "excerpt": "DynamoDB typically deletes expired items within 48 hours of expiration."
+    },
+    "category": "tables_limits",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_s3_014",
+    "question": "Can you configure S3 Object Lock on a bucket that has versioning disabled?",
+    "reference_answer": "No, S3 Object Lock requires bucket versioning to be enabled; when you enable Object Lock, S3 automatically enables versioning.",
+    "essential_facts": [
+      "S3 Object Lock requires bucket versioning",
+      "Versioning is automatically enabled when Object Lock is configured"
+    ],
+    "expected_evidence": {
+      "source": "object-lock.md",
+      "excerpt": "Object Lock works only on versioned buckets. When you create a bucket with Object Lock enabled, Amazon S3 automatically enables bucket versioning."
+    },
+    "category": "multi_passage",
+    "answerability": "answerable",
+    "split": "held_out"
+  },
+  {
+    "example_id": "eval_dynamo_015",
+    "question": "What HTTP status code does DynamoDB return when a ProvisionedThroughputExceededException occurs?",
+    "reference_answer": "DynamoDB returns an HTTP 400 Bad Request status code when a ProvisionedThroughputExceededException occurs.",
+    "essential_facts": [
+      "Returns HTTP 400 status code"
+    ],
+    "expected_evidence": {
+      "source": "Programming.Errors.md",
+      "excerpt": "ProvisionedThroughputExceededException: The request was rejected because the table or index throughput has been exceeded. HTTP Status Code: 400."
+    },
+    "category": "tables_limits",
+    "answerability": "answerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_abstain_016",
+    "question": "How do I configure partition keys and clustering columns in Google Cloud BigQuery?",
+    "reference_answer": "The provided documentation does not contain information about Google Cloud BigQuery.",
+    "essential_facts": [
+      "Topic is out of scope",
+      "System must refuse without hallucinating or fabricating BigQuery instructions"
+    ],
+    "expected_evidence": {
+      "source": "NONE",
+      "excerpt": "OUT_OF_SCOPE"
+    },
+    "category": "unanswerable",
+    "answerability": "unanswerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_abstain_017",
+    "question": "What is the monthly pricing of DynamoDB on-demand read request units in Indian Rupees?",
+    "reference_answer": "The provided technical documentation does not contain pricing information in Indian Rupees for DynamoDB request units.",
+    "essential_facts": [
+      "Currency and pricing details in INR are not present in the indexed technical documentation"
+    ],
+    "expected_evidence": {
+      "source": "NONE",
+      "excerpt": "OUT_OF_SCOPE"
+    },
+    "category": "unanswerable",
+    "answerability": "unanswerable",
+    "split": "held_out"
+  },
+  {
+    "example_id": "eval_abstain_018",
+    "question": "How do you define a PersistentVolumeClaim volume claim template inside a Kubernetes StatefulSet?",
+    "reference_answer": "The provided technical documentation does not cover Kubernetes StatefulSets or PersistentVolumeClaims.",
+    "essential_facts": [
+      "Kubernetes StatefulSet specifications are out of scope"
+    ],
+    "expected_evidence": {
+      "source": "NONE",
+      "excerpt": "OUT_OF_SCOPE"
+    },
+    "category": "unanswerable",
+    "answerability": "unanswerable",
+    "split": "dev"
+  },
+  {
+    "example_id": "eval_abstain_019",
+    "question": "How do I set up an ingress routing mesh for a multi-manager Docker Swarm cluster?",
+    "reference_answer": "The provided documentation does not contain instructions for configuring Docker Swarm routing mesh.",
+    "essential_facts": [
+      "Docker Swarm is out of scope"
+    ],
+    "expected_evidence": {
+      "source": "NONE",
+      "excerpt": "OUT_OF_SCOPE"
+    },
+    "category": "unanswerable",
+    "answerability": "unanswerable",
+    "split": "held_out"
+  },
+  {
+    "example_id": "eval_abstain_020",
+    "question": "What is the payload weight capacity of an AWS Snowmobile transport vehicle in kilograms?",
+    "reference_answer": "The provided documentation does not contain information regarding the weight capacity of an AWS Snowmobile shipping container.",
+    "essential_facts": [
+      "AWS Snowmobile physical specs are not present in the indexed manuals"
+    ],
+    "expected_evidence": {
+      "source": "NONE",
+      "excerpt": "OUT_OF_SCOPE"
+    },
+    "category": "unanswerable",
+    "answerability": "unanswerable",
+    "split": "dev"
+  }
+]
+

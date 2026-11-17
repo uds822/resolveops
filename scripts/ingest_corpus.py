@@ -54,11 +54,11 @@ MARKDOWN_DOCS = [
 ]
 
 HTML_DOCS = [
-    "data/raw/aws/html/Policy evaluation logic - AWS Identity and Access Management.html",
-    "data/raw/aws/html/Security best practices in IAM - AWS Identity and Access Management.html",
-    "data/raw/aws/html/Troubleshoot access denied (403 Forbidden) errors in Amazon S3 - Amazon Simple Storage Service.html",
-    "data/raw/aws/html/Troubleshoot configuration issues in Lambda - AWS Lambda.html",
-    "data/raw/aws/html/Troubleshoot invocation issues in Lambda - AWS Lambda.html",
+    "data/raw/aws/html/iam-policy-evaluation.html",
+    "data/raw/aws/html/iam-security-best-practices.html",
+    "data/raw/aws/html/s3-troubleshoot-403.html",
+    "data/raw/aws/html/lambda-troubleshoot-configuration.html",
+    "data/raw/aws/html/lambda-troubleshoot-invocation.html",
 ]
 
 # High-yield core chapters of massive AWS manuals (limits, releases, permissions, retries)

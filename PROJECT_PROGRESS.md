@@ -193,6 +193,56 @@ Input path
 - Added comprehensive unit tests in `tests/test_llm.py` validating that out-of-scope questions return zero citations.
 - Important files: `src/resolveops/generation/context_builder.py`, `src/resolveops/generation/llm.py`, `src/resolveops/service.py`, `frontend/styles.css`, `frontend/app.js`, `frontend/index.html`, `tests/test_llm.py`.
 
+### 2026-11-17 — Tier 2 Semantic Claim Verification and Faithfulness Auditing (Strategy A)
+
+- Implemented `GroundingVerifier` abstract interface and `LLMGroundingVerifier` in `src/resolveops/generation/grounding_verifier.py` to eliminate citation misattribution (stopping the LLM from fabricating claims while citing valid sources).
+- Implemented `extract_cited_claims()` to decompose generated answers into individual sentences carrying citations, safely handling dotted version strings (`3.3.2`) and technical identifiers (`pom.xml`).
+- Adopted Strategy A (Single-Call Batch Verification): packs all extracted claims into a single structured judge prompt at `temperature=0.0`, returning strict JSON verdicts with zero per-claim latency multiplication.
+- Formulated an objective `faithfulness_score = supported_claims / total_claims` (0.0 to 1.0) and populated `evidence_quote` vs. `explanation` for unsupported claims.
+- Integrated Stage 5 semantic claim verification into `RAGService.answer_query()`, recording `claim_audit_ms` in `RAGTimings` and exposing `faithfulness_score` and `claim_audit` in `RAGResponse`.
+- Extended `CitationReference` in `context_builder.py` with `content: str | None = None` so full source excerpts are propagated to the verifier.
+- Built `MockGroundingVerifier` with keyword-based unsupported claim simulation for fast, deterministic, offline CI testing.
+- Created `tests/test_grounding_verifier.py` with 8 passing unit/integration tests covering claim extraction, batch JSON parsing, markdown fence stripping, and malformed JSON fallback.
+- Created interactive CLI verification script in `scripts/verify_grounding_demo.py` demonstrating both 100% grounded answers and caught citation misattributions.
+- Updated Studio UI (`frontend/index.html`, `frontend/styles.css`, `frontend/app.js`) with dynamic `✅ 100% Grounded` / `⚠️ Unsupported Claims` badges, hover tooltips, message meta bar pills, and `Stage 4 (Claim Audit)` telemetry waterfall metrics.
+- Important files: `src/resolveops/generation/grounding_verifier.py`, `src/resolveops/generation/context_builder.py`, `src/resolveops/service.py`, `src/resolveops/api/main.py`, `scripts/verify_grounding_demo.py`, `tests/test_grounding_verifier.py`, `docs/claim_grounding_plan.md`, `README.md`.
+
+### 2026-11-17 — RAGAS Offline Benchmark Suite & Quality Release Gates
+
+- Curated the 20-item golden technical evaluation dataset (`data/eval_golden_set.json`) containing 15 in-scope answerable questions (across Lambda retries, DynamoDB TTL, S3 Object Lock, IAM credentials, and RDS Multi-AZ) and 5 adversarial out-of-scope queries (BigQuery, Kubernetes, Docker Swarm, INR currency, and Snowmobile) following the `docs/raga.md` schema.
+- Implemented the modular offline evaluation engine in `src/resolveops/evals/` (`models.py`, `ragas_evaluator.py`, `__init__.py`) calculating 5 core evaluation metrics:
+  - **Context Precision (MAP@K):** Evaluates if retrieved chunks carrying expected ground-truth evidence are prioritized at the top ranks ($k=1..K$).
+  - **Context Recall:** Verifies whether essential reference facts from the golden answer are attributed to the retrieved context chunks.
+  - **Faithfulness:** Leverages Tier 2 semantic claim verification to ensure answer claims are entailed by context without hallucinated markers.
+  - **Answer Relevance:** Evaluates query-answer semantic alignment, recognizing appropriate refusals on unanswerable queries.
+  - **Abstention Correctness:** Strictly measures whether adversarial/out-of-scope queries trigger graceful refusal with zero false citations.
+- Built CLI evaluation runner `scripts/eval_ragas.py` supporting `--smoke`, `--mock`, and full production evaluation with automated Markdown benchmark report formatting.
+- Added `MockEmbeddingModel` to `src/resolveops/retrieval/embeddings.py` for instantaneous, deterministic, network-free offline evaluation and CI execution.
+- Added comprehensive unit test suite in `tests/test_ragas_evaluator.py` (9 passing tests) verifying precision formulas, recall attribution, claim faithfulness, and abstention correctness.
+- Executed the full 20-example evaluation benchmark and generated `docs/ragas_benchmark_report.md`:
+  - Context Precision: **72.8%** (Gate: $\ge 70.0\%$ ✅)
+  - Context Recall: **86.7%** (Gate: $\ge 75.0\%$ ✅)
+  - Faithfulness: **100.0%** (Gate: $\ge 90.0\%$ ✅)
+  - Answer Relevance: **87.6%** (Gate: $\ge 80.0\%$ ✅)
+  - Abstention Accuracy: **100.0%** (Gate: $\ge 80.0\%$ ✅)
+  - Release Gate Status: **🟢 PASS (Approved for Release)**.
+- Important files: `data/eval_golden_set.json`, `src/resolveops/evals/models.py`, `src/resolveops/evals/ragas_evaluator.py`, `scripts/eval_ragas.py`, `tests/test_ragas_evaluator.py`, `docs/ragas_benchmark_report.md`.
+
+### 2026-11-18 — Multimodal Voice Agent Pipeline & ResolveOps Voice Studio UI
+
+- Built the complete end-to-end multimodal Voice Agent wrapping `RAGService` without modifying the core retrieval/grounding pipeline:
+  - **Voice Data Contracts (`src/resolveops/voice/models.py`):** Defined strict Pydantic models `STTResult`, `TTSResult`, `VoiceTimings` (`stt_ms` through `tts_ms` + `total_ms`), and `VoiceQueryResponse`.
+  - **Natural Speech Sanitizer (`src/resolveops/voice/sanitizer.py`):** Implemented `sanitize_for_speech()` to strip `[1]`/`[p.42]` citation markers, Markdown syntax, fenced code blocks, and pipe tables, convert headings/bullets to natural spoken pauses, expand storage/latency units (`10 GB` $\rightarrow$ `10 gigabytes`, `300ms` $\rightarrow$ `300 milliseconds`), and trim long answers cleanly at sentence boundaries.
+  - **Pluggable STT Adapters (`src/resolveops/voice/stt.py`):** Implemented `STTAdapter` ABC, `FasterWhisperSTT` (local CPU `int8` Whisper with Silero VAD filtering and AWS domain vocabulary prompt), `MockSTT`, and `make_stt_adapter()` factory.
+  - **Natural Neural TTS Adapters (`src/resolveops/voice/tts.py`):** Implemented `TTSAdapter` ABC, `KokoroTTS` (offline `Kokoro-82M` neural voice `af_heart` with pure in-memory PCM16 WAV encoding), `EdgeTTS` (expressive `en-US-AvaMultilingualNeural` voice with zero native C dependencies on Windows), `MockTTS` (valid RIFF/WAVE generator), and 50-entry LRU synthesis caching.
+  - **Bounded Audio Cache (`src/resolveops/voice/audio_store.py`):** Built thread-safe `InMemoryAudioStore` (50-entry LRU cap) for serving synthesized audio clips without memory leaks.
+  - **Voice Pipeline Orchestrator (`src/resolveops/voice/pipeline.py`):** Wired `STT -> EmptySpeechError Guard -> RAGService -> Sanitizer -> TTS (with graceful text-only fallback) -> AudioStore`.
+  - **FastAPI Voice Endpoints (`src/resolveops/api/main.py`):** Added `POST /api/v1/voice/query` (raw binary audio streaming with 10 MB cap, `run_in_threadpool` non-blocking execution, HTTP 400/413/422/503 guards) and `GET /api/v1/voice/audio/{audio_id}`, plus voice telemetry in `GET /health`.
+  - **ResolveOps RAG Studio Voice UI (`frontend/index.html`, `styles.css`, `app.js`):** Added browser `MediaRecorder API` microphone capture, animated listening waveform + elapsed timer, instant `<10ms` barge-in interruption (`stopActiveSpeech()`), inline audio playback bar with browser `SpeechSynthesis` fallback, and Stage 0 (STT) / Stage 5 (TTS) telemetry rows.
+- Added optional dependency groups `voice` and `voice-kokoro` to `pyproject.toml`.
+- Added 12 unit and API route tests in `tests/test_voice.py` (all passing; 40 passed across voice + core RAG suites).
+- Important files: `src/resolveops/voice/`, `src/resolveops/api/main.py`, `frontend/index.html`, `frontend/styles.css`, `frontend/app.js`, `tests/test_voice.py`, `pyproject.toml`.
+
 ## Adopted Engineering Strategies & Decision Log
 
 | Component | Strategy Adopted | Problem Solved / Trade-off |
@@ -207,6 +257,11 @@ Input path
 | **Table Quarantine** | `indexable=False` if `validation_state == "needs_review"`. | Flagged tables are retained for auditing/inspection but excluded from vector indexing. |
 | **Embedding Adapter** | `EmbeddingModel` ABC + `make_embedding_model()` factory. | Decouples vector store from embedding libraries; enables 1-line model upgrades (`all-MiniLM-L6-v2` $\rightarrow$ `bge-base` $\rightarrow$ Cloud API). |
 | **Deterministic IDs** | SHA-256 stable hashing (`make_stable_id`). | Re-ingesting unchanged documents produces identical IDs, enabling cache deduplication and low cloud costs. |
+| **Semantic Claim Verifier** | Strategy A (Single-call batch judge) + Sentence extraction | Eliminates citation misattribution while capping verification latency to 1 roundtrip (~500ms). |
+| **Source Text Propagation** | Extended `CitationReference` with full `content` string. | Provides claim verifier with full document excerpts for factual comparison without re-querying the database. |
+| **RAGAS Offline Harness** | Native evaluation metrics suite (`models.py`, `ragas_evaluator.py`, `eval_ragas.py`). | Prevents dependency bloat (avoiding 50+ third-party packages) while providing mathematically strict MAP@K Context Precision, Recall, Faithfulness, Relevance, and Abstention testing for CI/CD gates. |
+| **Voice Speech Sanitizer** | Parallel `spoken_text` stripping `[1]` citations, Markdown, tables/code & expanding units (`GB`, `ms`). | Prevents robotic spoken punctuation while keeping full rich Markdown + clickable citation cards intact in the UI. |
+| **2-Endpoint Voice Pattern** | `POST /api/v1/voice/query` (raw binary + JSON response) + `GET /api/v1/voice/audio/{id}` (50-clip LRU). | Returns both structured citations/grounding badges and audio cleanly without `python-multipart` or unbounded RAM growth; degrades gracefully to text + browser speech if TTS fails. |
 
 ## Progress update format
 
